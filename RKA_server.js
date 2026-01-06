@@ -861,7 +861,7 @@ async function initWebSocket() {
 // 🔑 SLAVE AUTH SYSTEM (Listens to Bot 1)
 // ============================================================
 async function initSlaveAuth() {
-    console.log("👀 Bot 2 (Slave) is waiting for Token from Bot 1...");
+    console.log("👀 Bot 2 is waiting for Token from Bot 1...");
 
     // LISTEN to the shared document in Real-Time
     db.collection('bot').doc('SHARED_AUTH').onSnapshot((doc) => {
