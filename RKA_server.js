@@ -42,8 +42,7 @@ const db = serviceAccount ? admin.firestore() : null;
 
 
 
-const puppeteer = require('puppeteer');
-const OTPAuth = require('otpauth');
+
 const { EMA, SMA, ATR, RSI } = require("technicalindicators");
 const { Parser } = require('json2csv'); // 🆕 For Excel Download
 // ✅ CORRECT IMPORT for Manual WebSocket
@@ -88,38 +87,20 @@ function authMiddleware(req, res, next) {
 }
 
 const STRATEGY_RULES = `
-**1. RISK MANAGEMENT RULES:**
-* **Initial Stop Loss:** 800 points fixed.
-* **Move to Cost:** IMMEDIATELY if Profit > ₹600 per lot.
-* **Trailing Stop:** If Profit > ₹1000, maintain a Trailing Gap of 500 points.
+**1. STRATEGY: SUPERTREND (8, 2.9)**
+* **Timeframe:** 5 Minutes
+* **Buy:** SuperTrend flips GREEN (Price > Upper Band)
+* **Sell:** SuperTrend flips RED (Price < Lower Band)
 
-**2. ENTRY LOGIC (STRICT):**
-* **BUY Signal:**
-    - Previous Close > Previous EMA50
-    - Current Volume > (Average Volume * 1.5)
-    - Price > Breakout High (bH)
-* **SELL Signal:**
-    - Previous Close < Previous EMA50
-    - Current Volume > (Average Volume * 1.5)
-    - Price < Breakout Low (bL)
+**2. INTRADAY RULES:**
+* **No Entry:** After 11:00 PM
+* **Hard Exit:** At 11:15 PM (Auto Square-off)
 `;
 
 // Apply the lock
 app.use(authMiddleware);
 
-// --- 🔑 LOGIN ROUTE ---
-app.post('/login', (req, res) => {
-    const password = process.env.ADMIN_PASSWORD;
-    const userPassword = req.body.password;
 
-    if (userPassword === password) {
-        // Set a cookie manually (works without extra libraries)
-        res.setHeader('Set-Cookie', `auth=${password}; HttpOnly; Max-Age=2592000; Path=/`); // Logged in for 30 days
-        res.redirect('/');
-    } else {
-        res.send(`<h1 style="color:red; text-align:center; margin-top:50px;">❌ WRONG PASSWORD <br> <a href="/">Try Again</a></h1>`);
-    }
-});
 
 
 // --- 📜 UPSTOX PROTOBUF SCHEMA ---
@@ -245,23 +226,23 @@ try {
 } catch (e) { console.error("❌ Proto Parse Error:", e); }
 
 
-// --- ⚙️ CONFIGURATION ---
 let botState = { 
     positionType: null, 
     entryPrice: 0, 
     currentStop: null, 
     totalPnL: 0, 
     quantity: 0,
-    maxTradeQty: 1,
+    maxTradeQty: 1, // Default to 1 lot
     history: [], 
     slOrderId: null, 
     isTradingEnabled: true, 
     hiddenLogIds: [],
     maxRunUp: 0,
+    maxDrawdown: 0,
     lastExitTime: 0,
     activeMonitors: {},
-    activeContract: "MCX_FO|458305", // ✅ New field
-    contractName: "SILVER MIC FEB"   // ✅ New field
+    activeContract: "MCX_FO|466029", 
+    contractName: "SILVER MIC APRIL"
 };
 
 
@@ -382,7 +363,7 @@ async function saveSettings() {
             hiddenLogIds: botState.hiddenLogIds || [],
             updatedAt: new Date().toISOString()
         };
-        await db.collection('bot').doc('main').set(settings, { merge: true });
+        await db.collection('bot').doc('strategy2').set(settings, { merge: true });
     } catch (e) { console.error("❌ Firebase Save Error:", e.message); }
 }
 
@@ -390,7 +371,7 @@ async function saveSettings() {
 async function saveTrade(tradeObj) {
     if (!db || !tradeObj || !tradeObj.id) return;
     try {
-        await db.collection('trades').doc(tradeObj.id.toString()).set(tradeObj, { merge: true });
+        await db.collection('trades_bot2').doc(tradeObj.id.toString()).set(tradeObj, { merge: true });
     } catch (e) { console.error(`❌ Could not save trade ${tradeObj.id}:`, e.message); }
 }
 
@@ -402,7 +383,7 @@ async function loadState() {
         console.log("📂 Connecting to Firebase...");
         
         // 1. Load Settings
-        const doc = await db.collection('bot').doc('main').get();
+        const doc = await db.collection('bot').doc('strategy2').get();
         if (doc.exists) {
             const data = doc.data();
             
@@ -434,7 +415,7 @@ async function loadState() {
         }
 
         // 2. Load Trades
-        const snapshot = await db.collection('trades').orderBy('date', 'desc').limit(200).get();
+        const snapshot = await db.collection('trades_bot2').orderBy('date', 'desc').limit(200).get();
         let rawHistory = [];
         snapshot.forEach(d => rawHistory.push(d.data()));
 
@@ -484,6 +465,75 @@ function calculateLivePnL() {
     const historyPnL = botState.history.reduce((acc, log) => acc + (log.pnl || 0), 0);
     
     return { live: uPnL.toFixed(2), history: historyPnL.toFixed(2) };
+}
+
+// ✅ SUPERTREND CALCULATOR (8, 2.9)
+function calculateSuperTrend(candles, period = 8, multiplier = 2.9) {
+    const high = candles.map(c => c[2]);
+    const low = candles.map(c => c[3]);
+    const close = candles.map(c => c[4]);
+    
+    // Calculate ATR using the library
+    const atrInput = { high, low, close, period };
+    const atrValues = ATR.calculate(atrInput);
+
+    let finalUpperBand = 0;
+    let finalLowerBand = 0;
+    let superTrend = [];
+    let direction = 1; // 1 = Green, -1 = Red
+
+    // Offset to align ATR array with Price array
+    const offset = candles.length - atrValues.length;
+
+    for(let i = 0; i < atrValues.length; i++) {
+        const cIdx = i + offset;
+        const mid = (high[cIdx] + low[cIdx]) / 2;
+        const atr = atrValues[i];
+        
+        let basicUpper = mid + (multiplier * atr);
+        let basicLower = mid - (multiplier * atr);
+
+        let prevFinalUpper = (i===0) ? basicUpper : finalUpperBand;
+        let prevFinalLower = (i===0) ? basicLower : finalLowerBand;
+        let prevClose = (i===0) ? close[cIdx] : close[cIdx-1];
+
+        // FINAL UPPER BAND LOGIC
+        if (basicUpper < prevFinalUpper || prevClose > prevFinalUpper) {
+            finalUpperBand = basicUpper;
+        } else {
+            finalUpperBand = prevFinalUpper;
+        }
+
+        // FINAL LOWER BAND LOGIC
+        if (basicLower > prevFinalLower || prevClose < prevFinalLower) {
+            finalLowerBand = basicLower;
+        } else {
+            finalLowerBand = prevFinalLower;
+        }
+
+        // DIRECTION FLIP
+        let stValue = 0;
+        if (direction === 1) { 
+            stValue = finalLowerBand;
+            if (close[cIdx] < finalLowerBand) {
+                direction = -1; 
+                stValue = finalUpperBand;
+            }
+        } else {
+            stValue = finalUpperBand;
+            if (close[cIdx] > finalUpperBand) {
+                direction = 1; 
+                stValue = finalLowerBand;
+            }
+        }
+
+        superTrend.push({ 
+            time: candles[cIdx][0], 
+            value: stValue, 
+            direction: direction === 1 ? 'BUY' : 'SELL' 
+        });
+    }
+    return superTrend;
 }
 
 // ✅ UPDATED DASHBOARD PUSHER (Sends Logs too)
@@ -807,75 +857,40 @@ async function initWebSocket() {
     }
 }
 
+// ============================================================
+// 🔑 SLAVE AUTH SYSTEM (Listens to Bot 1)
+// ============================================================
+async function initSlaveAuth() {
+    console.log("👀 Bot 2 (Slave) is waiting for Token from Bot 1...");
 
-
-// --- 🤖 AUTO-LOGIN SYSTEM ---
-async function performAutoLogin() {
-    console.log("🤖 STARTING AUTO-LOGIN SEQUENCE...");
-    
-    if (currentWs) { try { currentWs.close(); } catch(e) {} currentWs = null; }
-
-    let browser = null;
-    try {
-        const totp = new OTPAuth.TOTP({ algorithm: 'SHA1', digits: 6, period: 30, secret: OTPAuth.Secret.fromBase32(UPSTOX_TOTP_SECRET) });
-        const codeOTP = totp.generate();
-        console.log("🔐 Generated TOTP.");
-
-        browser = await puppeteer.launch({
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--window-size=1920,1080']
-        });
-        const page = await browser.newPage();
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-
-        const loginUrl = `https://api.upstox.com/v2/login/authorization/dialog?response_type=code&client_id=${API_KEY}&redirect_uri=${REDIRECT_URI}`;
-        console.log("🌍 Navigating to Upstox...");
-        await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-
-        const mobileInput = await page.$('#mobileNum');
-        if (!mobileInput) throw new Error("Login Page Not Loaded");
-
-        console.log("📱 Detected Login Screen. Typing Credentials...");
-        await page.type('#mobileNum', UPSTOX_USER_ID);
-        await page.click('#getOtp');
-        
-        await page.waitForSelector('#otpNum', { visible: true, timeout: 30000 });
-        await page.type('#otpNum', codeOTP);
-        await page.click('#continueBtn');
-
-        await page.waitForSelector('#pinCode', { visible: true, timeout: 30000 });
-        await page.type('#pinCode', UPSTOX_PIN);
-        await page.click('#pinContinueBtn');
-
-        // ✅ FIXED: Wait for URL instead of network idle
-        await page.waitForFunction(() => window.location.href.includes('code='), { timeout: 40000 });
-        
-        const finalUrl = page.url();
-        const authCode = new URL(finalUrl).searchParams.get('code');
-
-        const params = new URLSearchParams();
-        params.append('code', authCode);
-        params.append('client_id', API_KEY);
-        params.append('client_secret', API_SECRET);
-        params.append('redirect_uri', REDIRECT_URI);
-        params.append('grant_type', 'authorization_code');
-
-        const res = await axios.post('https://api.upstox.com/v2/login/authorization/token', params, { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }});
-        ACCESS_TOKEN = res.data.access_token;
-        
-        await initWebSocket();
-        
-        console.log("🎉 SUCCESS! Session Active & Socket Started.");
-        if (browser) await browser.close(); 
-        browser = null;
-
-        botState.history.unshift({ time: getIST().toLocaleTimeString(), type: "SYSTEM", price: 0, id: "Auto-Login OK", status: "OK" });
-        await saveState();
-
-    } catch (e) { 
-        console.error("❌ Auto-Login Failed:", e.message); 
-        if (browser) await browser.close();
-    } 
+    // LISTEN to the shared document in Real-Time
+    db.collection('bot').doc('SHARED_AUTH').onSnapshot((doc) => {
+        if (doc.exists) {
+            const data = doc.data();
+            const today = new Date().toDateString();
+            
+            // Only accept token if it was generated TODAY
+            if (data.date === today && data.access_token) {
+                if (ACCESS_TOKEN !== data.access_token) {
+                    ACCESS_TOKEN = data.access_token;
+                    console.log("✅ Bot 2 received fresh Access Token! Ready to trade.");
+                    
+                    // Restart WebSocket with new token
+                    if (currentWs) try { currentWs.close(); } catch(e){}
+                    initWebSocket();
+                }
+            } else {
+                console.log("⚠️ Token in DB is old/expired. Waiting for Bot 1...");
+            }
+        }
+    });
 }
+
+// Start Listening immediately
+initSlaveAuth();
+
+
+
 
 // --- DATA ENGINE ---
 async function getMergedCandles() {
@@ -1269,34 +1284,45 @@ async function validateToken() {
     }
 }
 
-// --- CRON & WATCHDOG ---
-setInterval(() => {
-    const now = getIST();
-    // ✅ FIXED: Removed "!ACCESS_TOKEN" check. We MUST login daily to get a fresh token.
-    // ✅ TEST MODE: Set to 12:30 PM
-    if (now.getHours() === 8 && now.getMinutes() === 30) {
-        console.log("⏰ Scheduled Auto-Login Triggered...");
-        performAutoLogin(); 
-    }
-}, 60000);
-// TRADING LOOP (Runs every 30s)
-// --- TRADING ENGINE (Watcher & Entry) ---
-// --- TRADING ENGINE (Watcher & Signal Logic - Runs every 30s) ---
-// --- TRADING ENGINE (Watcher & Signal Logic - Runs every 30s) ---
+// ============================================================
+// 🤖 TRADING LOOP (Executes Every 30 Seconds)
+// Strategy: SuperTrend (8, 2.9) | Intraday Only
+// ============================================================
 setInterval(async () => {
-    await validateToken(); 
-    if (!ACCESS_TOKEN || !isApiAvailable()) return;
-  
-    // 1. WebSocket Watchdog: Reconnect if dropped
+    // 1. SAFETY CHECKS (Slave Mode)
+    // We do NOT login here. We just check if Bot 1 gave us a token.
+    if (!ACCESS_TOKEN) return; 
+
+    // 2. WebSocket Watchdog: Reconnect if dropped
     if ((lastKnownLtp === 0 || !currentWs) && ACCESS_TOKEN) {
+        console.log("⚠️ WebSocket dropped. Reconnecting...");
         initWebSocket();
         return; 
     }
 
     try {
-        // 2. Fetch Candle Data for ACTIVE contract
+        // --- 🕒 INTRADAY TIME MANAGEMENT ---
+        const now = getIST();
+        const currentMinutes = (now.getHours() * 60) + now.getMinutes();
+        
+        // Settings: 11:00 PM (Stop Entry) & 11:15 PM (Force Exit)
+        const NO_NEW_TRADES_TIME = 1380; 
+        const FORCE_EXIT_TIME = 1395;    
+
+        // 🛑 LOGIC A: AUTO SQUARE-OFF (11:15 PM)
+        if (currentMinutes >= FORCE_EXIT_TIME && botState.positionType && botState.positionType !== 'EXITING') {
+            console.log(`⏰ [TIME LIMIT] 11:15 PM Reached. Forcing Intraday Square-off!`);
+            
+            const exitType = botState.positionType === 'LONG' ? 'SELL' : 'BUY';
+            // We pass a special reason so you know why it closed
+            await placeOrder(exitType, botState.quantity, lastKnownLtp, { reason: "Intraday Time Limit" });
+            return; // Stop processing further
+        }
+
+        // --- 📊 DATA ENGINE (Fetch Candles) ---
         const today = new Date();
         const tenDaysAgo = new Date(); tenDaysAgo.setDate(today.getDate() - 10);
+        
         const urlIntraday = `https://api.upstox.com/v3/historical-candle/intraday/${encodeURIComponent(botState.activeContract)}/minutes/5`;
         const urlHistory = `https://api.upstox.com/v3/historical-candle/${encodeURIComponent(botState.activeContract)}/minutes/5/${formatDate(today)}/${formatDate(tenDaysAgo)}`;
 
@@ -1305,113 +1331,78 @@ setInterval(async () => {
             axios.get(urlIntraday, { headers: { 'Authorization': `Bearer ${ACCESS_TOKEN}` } }).catch(e => ({ data: { data: { candles: [] } } }))
         ]);
 
+        // Merge & Sort Candles
         const mergedMap = new Map();
         (histRes.data?.data?.candles || []).forEach(c => mergedMap.set(c[0], c));
         (intraRes.data?.data?.candles || []).forEach(c => mergedMap.set(c[0], c));
         const candles = Array.from(mergedMap.values()).sort((a, b) => new Date(a[0]) - new Date(b[0]));
 
         if (candles.length > 200) {
-            const cl = candles.map(c => c[4]);
-            const h = candles.map(c => c[2]);
-            const l = candles.map(c => c[3]);
-            const v = candles.map(c => c[5]);
-
-            // 1. CALCULATE INDICATORS
-            const e50 = EMA.calculate({period: 50, values: cl});
-            const e200 = EMA.calculate({period: 200, values: cl});
-            const vAvg = SMA.calculate({period: 20, values: v});
-            const atr = ATR.calculate({high: h, low: l, close: cl, period: 14});
-            const rsiArray = RSI.calculate({period: 14, values: cl}); // 🆕 RSI
-
-            const curE50 = e50[e50.length-1];
-            const curE200 = e200[e200.length-1];
-            const curV = v[v.length-1];
-            const curAvgV = vAvg[vAvg.length-1];
-            const curRSI = rsiArray[rsiArray.length - 1]; 
             
-           // ✅ ATR LOGIC: MIN 500 OR DEFAULT 1000
-            const rawATR = atr[atr.length-1];
+            // --- 📈 STRATEGY ENGINE: SUPERTREND (8, 2.9) ---
+            // Note: Ensure you added the 'calculateSuperTrend' function at the top of your file!
+            const stData = calculateSuperTrend(candles, 8, 2.9);
             
-            // 1. Store the REAL ATR for display/logging
-            const displayATR = rawATR ? rawATR.toFixed(0) : "0";
-
-            // 2. Set the GLOBAL ATR for Strategy (Safety Floor)
-            globalATR = rawATR ? Math.max(rawATR, 500) : 1000; 
-
-            const bH = Math.max(...h.slice(-11, -1));
-            const bL = Math.min(...l.slice(-11, -1));
-            const volMult = curV / curAvgV; 
-
-            // 2. DETAILED LOG (Now shows REAL ATR)
+            // Get Candles: [..., Previous(Completed), Current(Forming)]
+            const lastCandleST = stData[stData.length - 2]; // The last COMPLETED 5-min candle
+            const prevCandleST = stData[stData.length - 3]; // The one before that
+            
+            // Log Status
             const shortName = botState.contractName.replace("SILVER MIC ", ""); 
-            console.log(`📊 [${shortName}] LTP:${lastKnownLtp} E50:${curE50.toFixed(0)} E200:${curE200.toFixed(0)} Vol:${curV} AvgV:${curAvgV.toFixed(0)} ATR:${displayATR} (Used:${globalATR.toFixed(0)}) RSI:${curRSI.toFixed(1)}`);
+            const trendColor = lastCandleST.direction === 'BUY' ? '🟢' : '🔴';
+            
+            console.log(`📊 [${shortName}] LTP: ${lastKnownLtp} | ST: ${lastCandleST.value.toFixed(0)} | Trend: ${trendColor} ${lastCandleST.direction}`);
 
-            // 3. SIGNAL LOGIC
-            if (isMarketOpen() && !botState.positionType) {
+            // --- 🚦 SIGNAL LOGIC ---
+            // Only trade if market is open AND it's before 11:00 PM
+            if (isMarketOpen() && currentMinutes < NO_NEW_TRADES_TIME) {
                 
-                // ✅ RULE: Volume Guardrails (1.4x to 3.5x)
-                const isVolValid = (volMult > 1.4 && volMult <= 3.5); 
+                // 1. Check for Trend FLIP
+                // Buy: Was SELL, Now BUY
+                const isBuySignal = (prevCandleST.direction === 'SELL' && lastCandleST.direction === 'BUY');
+                // Sell: Was BUY, Now SELL
+                const isSellSignal = (prevCandleST.direction === 'BUY' && lastCandleST.direction === 'SELL');
 
-                const isBuySignal = (
-                    cl[cl.length-2] > e50[e50.length-2] && 
-                    isVolValid && 
-                    lastKnownLtp > bH 
-                );
-
-                const isSellSignal = (
-                    cl[cl.length-2] < e50[e50.length-2] && 
-                    isVolValid && 
-                    lastKnownLtp < bL 
-                );
-
-                // Check Cooling Period
-                const msSinceExit = Date.now() - botState.lastExitTime;
-                const inCoolingPeriod = msSinceExit < 120000;
-                const waitSec = Math.ceil((120000 - msSinceExit) / 1000);
-
-                // --- 4. SIGNAL EXECUTION BLOCK ---
-                if (isBuySignal || isSellSignal) {
+                // 2. Execution Logic
+                // We only enter if we have NO position (or you can add reverse logic if you want to flip immediately)
+                if ((isBuySignal || isSellSignal) && !botState.positionType) {
+                    
                     const signalType = isBuySignal ? "BUY" : "SELL";
-
-                    // Check if we are in the "Cooling Period" (2 mins after exit)
-                    if (inCoolingPeriod) {
-                        console.log(`⚠️ [COOLING] Signal Detected: ${signalType} @ ${lastKnownLtp} | Execution Blocked for ${waitSec}s`);
-                    } 
-                    else if (botState.isTradingEnabled) {
+                    
+                    if (botState.isTradingEnabled) {
+                        console.log(`🚀 [SIGNAl] SuperTrend Flip Detected: ${signalType} @ ${lastKnownLtp}`);
                         
-                        console.log(`⚡ Signal Triggered: ${signalType} @ ${lastKnownLtp}`);
-
-                        // ✅ CAPTURE METRICS FOR ANALYSIS/EXCEL
-                        // We capture these NOW so they match exactly why we took the trade
+                        // Metrics for the log
                         const tradeMetrics = {
-                            rsi: curRSI.toFixed(2),
-                            atr: globalATR.toFixed(0),
-                            e50: curE50.toFixed(0),
-                            e200: curE200.toFixed(0),
-                            vol: curV,
-                            avgVol: curAvgV.toFixed(0),
-                            volMult: volMult.toFixed(2)
+                            strategy: "SuperTrend 8-2.9",
+                            stValue: lastCandleST.value.toFixed(0),
+                            flipTime: getIST().toLocaleTimeString()
                         };
 
-                        // ✅ PASS METRICS TO PLACE ORDER
-                        // This ensures they get saved to the log immediately
+                        // Execute
                         await placeOrder(signalType, botState.maxTradeQty, lastKnownLtp, tradeMetrics);
-
                     } else {
-                        // Log for monitoring even if trading is paused
-                        console.log(`⚠️ Signal (Paused): ${signalType} @ ${lastKnownLtp} | RSI: ${curRSI.toFixed(1)}`);
+                        console.log(`💤 Signal Ignored: Trading is PAUSED.`);
                     }
                 }
-                // Optional: Log cooling status if active
-                else if (inCoolingPeriod) {
-                    console.log(`⏳ Cooling Period Active: Waiting ${waitSec}s more...`);
-                }
             } 
+            else if (currentMinutes >= NO_NEW_TRADES_TIME && currentMinutes < FORCE_EXIT_TIME) {
+                // Log once in a while to confirm we are in "No Entry" mode
+                 if (currentMinutes % 5 === 0) console.log("zzz No New Entries allowed (After 11:00 PM)");
+            }
         }
     } catch (e) { 
-        if(e.response?.status===401) { ACCESS_TOKEN = null; performAutoLogin(); } 
+        // Token Error handling -> Wait for Bot 1 to refresh it
+        if(e.response?.status===401) { 
+            console.log("⚠️ Token Expired in Loop. Waiting for Bot 1...");
+            ACCESS_TOKEN = null; 
+        } else {
+            console.error("❌ Loop Error:", e.message);
+        }
     }
 }, 30000);
+
+
 
 
 // --- 📡 API & DASHBOARD ---
@@ -1461,7 +1452,7 @@ app.get('/delete-log/:id', async (req, res) => {
 
     // 🔥 Firebase Delete
     try {
-        if(db) await db.collection('trades').doc(idToRemove).delete();
+        if(db) await db.collection('trades_bot2').doc(idToRemove).delete();
         await saveSettings();
     } catch(e) { console.error("Firebase delete error", e); }
 
@@ -1518,7 +1509,7 @@ app.get('/', (req, res) => {
             <div style="width:100%; max-width:650px; background:#1e293b; padding:25px; border-radius:15px;">
                 
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                    <h2 style="color:#38bdf8; margin:0;">🥈 SILVER SAARTHI</h2>
+                    <h2 style="color:#38bdf8; margin:0;">|| श्री || Radha Kishan Silver</h2>
                     <div style="font-size:12px; color:#94a3b8;">${botState.contractName}</div>
                     <a href="/toggle-trading" id="toggle-btn" style="padding:8px 15px; border-radius:8px; text-decoration:none; color:white; font-weight:bold; background:${botState.isTradingEnabled?'#22c55e':'#ef4444'}">
                         ${botState.isTradingEnabled?'🟢 TRADING ON':'🔴 PAUSED'}
@@ -1595,7 +1586,6 @@ app.get('/', (req, res) => {
             </div></body></html>`);
 });
 
-app.post('/trigger-login', (req, res) => { performAutoLogin(); res.redirect('/'); });
 
 // --- SMART SYNC (PnL Replay + Data Protection) ---
 // --- SMART SYNC (Full Replay Engine + Dynamic Contract Support) ---
@@ -1854,7 +1844,7 @@ app.get('/analyze-sl/:id', async (req, res) => {
 app.post('/api/generate-analysis', async (req, res) => {
     try {
         const { tradeId, force } = req.body;
-        const docRef = db.collection('trades').doc(tradeId);
+        const docRef = db.collection('trades_bot2').doc(tradeId);
         const doc = await docRef.get();
         if (!doc.exists) return res.send("Trade not found.");
         
@@ -2176,7 +2166,7 @@ app.post('/ask-trade-question', async (req, res) => {
         const { tradeId, question } = req.body;
         
         // 1. Fetch the trade again so AI knows the context
-        const doc = await db.collection('trades').doc(tradeId).get();
+        const doc = await db.collection('trades_bot2').doc(tradeId).get();
         if (!doc.exists) return res.json({ answer: "Error: Trade not found." });
         const t = doc.data();
 
@@ -2220,7 +2210,7 @@ app.get('/ai-overall-optimization', async (req, res) => {
         console.log("🧠 Gemini 3.0 Flash: Starting Global Strategy Analysis...");
         
         // Fetch your Firebase logs
-        const snapshot = await db.collection('trades').get();
+        const snapshot = await db.collection('trades_bot2').get();
         let tradeLogs = [];
         snapshot.forEach(doc => tradeLogs.push(doc.data()));
 
