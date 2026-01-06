@@ -99,6 +99,20 @@ const STRATEGY_RULES = `
 
 // Apply the lock
 app.use(authMiddleware);
+// --- 🔑 ADMIN PASSWORD LOGIN ROUTE (Restored) ---
+app.post('/login', (req, res) => {
+    const password = process.env.ADMIN_PASSWORD;
+    const userPassword = req.body.password;
+
+    // Check if the typed password matches the Render Environment Variable
+    if (userPassword === password) {
+        // Set a cookie manually so you stay logged in for 30 days
+        res.setHeader('Set-Cookie', `auth=${password}; HttpOnly; Max-Age=2592000; Path=/`); 
+        res.redirect('/');
+    } else {
+        res.send(`<h1 style="color:red; text-align:center; margin-top:50px;">❌ WRONG PASSWORD <br> <a href="/">Try Again</a></h1>`);
+    }
+});
 
 
 
