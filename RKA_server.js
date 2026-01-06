@@ -1523,7 +1523,7 @@ app.get('/', (req, res) => {
             <div style="width:100%; max-width:650px; background:#1e293b; padding:25px; border-radius:15px;">
                 
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                    <h2 style="color:#38bdf8; margin:0;">|| श्री || Radha Kishan Silver</h2>
+                    <h2 style="color:#38bdf8; margin:0;">श्री Radha Kishan Silver</h2>
                     <div style="font-size:12px; color:#94a3b8;">${botState.contractName}</div>
                     <a href="/toggle-trading" id="toggle-btn" style="padding:8px 15px; border-radius:8px; text-decoration:none; color:white; font-weight:bold; background:${botState.isTradingEnabled?'#22c55e':'#ef4444'}">
                         ${botState.isTradingEnabled?'🟢 TRADING ON':'🔴 PAUSED'}
