@@ -2,9 +2,9 @@
   "name": "silver-bot",
   "version": "1.0.0",
   "description": "Silver Prime Bot",
-  "main": "server.js",
+  "main": "RKA_server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node RKA_server.js"
   },
   "dependencies": {
     "express": "^4.18.2",
