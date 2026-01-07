@@ -723,73 +723,34 @@ async function initWebSocket() {
                                 }
                                                     
                 
-                                // 1️⃣ LIVE TRADE TRACKING
-                                if (botState.positionType) {
-                                    const tradeQty = botState.quantity || 1;
-                                    let currentProfit = 0;
-                                    
-                                    // Calculate Total Profit
-                                    if (botState.positionType === 'LONG') currentProfit = (newPrice - botState.entryPrice) * tradeQty;
-                                    if (botState.positionType === 'SHORT') currentProfit = (botState.entryPrice - newPrice) * tradeQty;
-                                    
-                                    // Track Max Run Up (MFE)
-                                    if (currentProfit > botState.maxRunUp) botState.maxRunUp = currentProfit;
-                                
-                                    // ✅ FIX 1: TRACK MAX DRAWDOWN (MAE)
-                                    // Initialize if undefined
-                                    if (botState.maxDrawdown === undefined) botState.maxDrawdown = 0;
-                                    // Capture lowest PnL (e.g., -500 is "less than" 0)
-                                    if (currentProfit < botState.maxDrawdown) botState.maxDrawdown = currentProfit;
-                                
-                                    // ✅ RULE 1: DYNAMIC TRAILING
-                                    // Use Live ATR (limit min to 500)
-                                    const liveATR = globalATR > 0 ? globalATR : 800; // Failsafe only if 0const liveATR = Math.max(globalATR, 500) || 1000;
-                                    
+                                // ✅ RULE 1: FIXED TRAILING STOP (2.5x ATR)
+                                    // Use Pure Live ATR (No Min/Max limits)
+                                    const liveATR = globalATR > 0 ? globalATR : 800;
+
                                     let newStop = botState.currentStop;
                                     let didChange = false;
 
-                                    // ✅ FIX 1: Define Default Trailing Gap (1.5x ATR)
-                                    let trailingGap = liveATR * 2.5; // Changed from 1.5 to 2.5
+                                    // ✅ SIMPLE FIXED GAP
+                                    const trailingGap = liveATR * 2.5; 
 
-                                    // STAGE A: Move to Cost if Profit > 1 ATR (Per Lot)
-                                    // Logic: If Total Profit > (ATR * Qty)
-                                    if (currentProfit >= (liveATR * tradeQty)) {
-                                        
-                                        // ✅ FIX: Calculate Cost + 50 (Brokerage Buffer)
-                                        let costSL = botState.entryPrice;
-                                        if (botState.positionType === 'LONG') costSL = botState.entryPrice + 50;
-                                        if (botState.positionType === 'SHORT') costSL = botState.entryPrice - 50;
-
-                                        // Check if this new "Cost + 50" level is better than the current Stop
-                                        // For LONG, Better = Higher | For SHORT, Better = Lower
-                                        const isBetter = botState.positionType === 'LONG' ? (costSL > botState.currentStop) : (costSL < botState.currentStop);
-                                        
-                                        if (isBetter) {
-                                            newStop = costSL;
-                                            didChange = true;
-                                            // ✅ LOG: Shows Profit vs Target
-                                            console.log(`🛡️ Profit ₹${currentProfit.toFixed(0)} > 1 ATR (₹${(liveATR * tradeQty).toFixed(0)}) | Moving SL to Cost + 50`);
-                                        }
-                                    }
-
-                                    // STAGE B: Tighten Gap if Profit > 1.5 ATR (Per Lot)
-                                    if (currentProfit >= (1.5 * liveATR * tradeQty)) {
-                                        // Normal Trail Gap = 1 ATR
-                                        trailingGap = liveATR; 
-                                        
-                                        // Super Trend: Tighten if Profit > 4 ATR (Per Lot)
-                                        if (currentProfit >= (4 * liveATR * tradeQty)) {
-                                            trailingGap = liveATR * 0.5;
-                                        }
-                                    }
-
-                                    // Apply Calculated Gap
+                                    // --- APPLY THE TRAIL ---
                                     if (botState.positionType === 'LONG') {
-                                        const trailingLevel = newPrice - trailingGap; // ✅ trailingGap is now safe to use
-                                        if (trailingLevel > newStop && trailingLevel > botState.currentStop + 50) { newStop = trailingLevel; didChange = true; }
+                                        const trailingLevel = newPrice - trailingGap;
+                                        
+                                        // RATCHET: Only move UP
+                                        // We use +50 buffer to avoid spamming Upstox with tiny updates
+                                        if (trailingLevel > botState.currentStop + 50) { 
+                                            newStop = trailingLevel; 
+                                            didChange = true; 
+                                        }
                                     } else {
-                                        const trailingLevel = newPrice + trailingGap; // ✅ trailingGap is now safe to use
-                                        if (trailingLevel < newStop && trailingLevel < botState.currentStop - 50) { newStop = trailingLevel; didChange = true; }
+                                        const trailingLevel = newPrice + trailingGap;
+                                        
+                                        // RATCHET: Only move DOWN
+                                        if (trailingLevel < botState.currentStop - 50) { 
+                                            newStop = trailingLevel; 
+                                            didChange = true; 
+                                        }
                                     }
 
                                     if (didChange) {
@@ -798,36 +759,6 @@ async function initWebSocket() {
                                         pushToDashboard(); 
                                         modifyExchangeSL(oldStop, newStop); 
                                     }
-                                    
-                                    // Stop Loss Hit Logic
-                                    if ((botState.positionType === 'LONG' && newPrice <= botState.currentStop) || 
-                                        (botState.positionType === 'SHORT' && newPrice >= botState.currentStop)) {
-                                        
-                                        if (botState.positionType !== 'EXITING' && botState.positionType !== 'NONE') {
-                                            console.log(`🛑 Stop Loss Hit. Verifying ${botState.quantity}L Exit...`);
-                                            
-                                            const exitOrderId = botState.slOrderId;
-                                            const exitType = botState.positionType === 'LONG' ? 'SELL' : 'BUY';
-                                            const currentTradeQty = botState.quantity; 
-
-                                            botState.history.unshift({ 
-                                                date: formatDate(getIST()), 
-                                                time: getIST().toLocaleTimeString(), 
-                                                type: exitType, 
-                                                qty: currentTradeQty, 
-                                                orderedPrice: botState.currentStop, 
-                                                executedPrice: 0, 
-                                                id: exitOrderId, 
-                                                status: "EXITING", 
-                                                tag: "API_BOT" 
-                                            });
-
-                                            botState.positionType = 'EXITING'; 
-                                            pushToDashboard(); 
-                                            verifyOrderStatus(exitOrderId, 'EXIT_CHECK');
-                                        }
-                                    }
-                                }
 
                                 // 2️⃣ POST-TRADE MONITORING
                                 const now = Date.now();
