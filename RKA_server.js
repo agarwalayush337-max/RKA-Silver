@@ -647,6 +647,11 @@ async function initWebSocket() {
         const response = await axios.get("https://api.upstox.com/v3/feed/market-data-feed/authorize", { headers: { 'Authorization': 'Bearer ' + ACCESS_TOKEN, 'Accept': 'application/json' } });
         const WebSocket = require('ws'); 
         currentWs = new WebSocket(response.data.data.authorizedRedirectUri, { followRedirects: true });
+        // ✅ ADD THIS BLOCK HERE (Prevents crash & resets for the 30s retry loop)
+        currentWs.on('error', (error) => {
+            console.error(`❌ WebSocket Error: ${error.message}`);
+            currentWs = null; // This lets your main 30s loop try again later
+        });
         currentWs.binaryType = "arraybuffer"; 
 
         currentWs.onopen = () => {
