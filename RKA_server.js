@@ -1301,50 +1301,45 @@ async function validateToken() {
 }
 
 // ============================================================
-// 🤖 TRADING LOOP (Executes Every 30 Seconds)
-// Strategy: SuperTrend (8, 2.9) | Intraday Only
+// 🤖 TRADING LOOP (Executes Every 15 Seconds)
 // ============================================================
 setInterval(async () => {
     // 1. SAFETY CHECKS (Slave Mode)
-    // We do NOT login here. We just check if Bot 1 gave us a token.
-    if (!ACCESS_TOKEN) return; 
+    if (!ACCESS_TOKEN) return;
 
     // 2. WebSocket Watchdog: Reconnect if dropped
     if ((lastKnownLtp === 0 || !currentWs) && ACCESS_TOKEN) {
         console.log("⚠️ WebSocket dropped. Reconnecting...");
         initWebSocket();
-        return; 
+        return;
     }
 
     try {
         // --- 🕒 INTRADAY TIME MANAGEMENT ---
         const now = getIST();
         const currentMinutes = (now.getHours() * 60) + now.getMinutes();
-        
+
         // Settings: 11:00 PM (Stop Entry) & 11:15 PM (Force Exit)
         const NO_NEW_TRADES_TIME = 1380; 
         const FORCE_EXIT_TIME = 1395;    
 
-        // 🛑 LOGIC A: AUTO SQUARE-OFF (11:15 PM)
+        // 🛑 AUTO SQUARE-OFF (11:15 PM)
         if (currentMinutes >= FORCE_EXIT_TIME && botState.positionType && botState.positionType !== 'EXITING') {
             console.log(`⏰ [TIME LIMIT] 11:15 PM Reached. Forcing Intraday Square-off!`);
-            
             const exitType = botState.positionType === 'LONG' ? 'SELL' : 'BUY';
-            // We pass a special reason so you know why it closed
             await placeOrder(exitType, botState.quantity, lastKnownLtp, { reason: "Intraday Time Limit" });
-            return; // Stop processing further
+            return;
         }
 
         // --- 📊 DATA ENGINE (Fetch Candles) ---
         const today = new Date();
         const tenDaysAgo = new Date(); tenDaysAgo.setDate(today.getDate() - 10);
-        
         const urlIntraday = `https://api.upstox.com/v3/historical-candle/intraday/${encodeURIComponent(botState.activeContract)}/minutes/5`;
         const urlHistory = `https://api.upstox.com/v3/historical-candle/${encodeURIComponent(botState.activeContract)}/minutes/5/${formatDate(today)}/${formatDate(tenDaysAgo)}`;
 
         const [histRes, intraRes] = await Promise.all([
-            axios.get(urlHistory, { headers: { 'Authorization': `Bearer ${ACCESS_TOKEN}` } }).catch(e => ({ data: { data: { candles: [] } } })),
-            axios.get(urlIntraday, { headers: { 'Authorization': `Bearer ${ACCESS_TOKEN}` } }).catch(e => ({ data: { data: { candles: [] } } }))
+            axios.get(urlHistory, { headers: { 'Authorization': `Bearer ${ACCESS_TOKEN}` } }).catch(() => ({ data: { data: { candles: [] } } })),
+            axios.get(urlIntraday, { headers: { 'Authorization': `Bearer ${ACCESS_TOKEN}` } }).catch(() => ({ data: { data: { candles: [] } } }))
         ]);
 
         // Merge & Sort Candles
@@ -1353,86 +1348,92 @@ setInterval(async () => {
         (intraRes.data?.data?.candles || []).forEach(c => mergedMap.set(c[0], c));
         const candles = Array.from(mergedMap.values()).sort((a, b) => new Date(a[0]) - new Date(b[0]));
 
+        // Calculate ATR(18) for SL (RAW, no clamps) - run each loop after candles exist
+        try {
+            if (Array.isArray(candles) && candles.length) {
+                const highArr = candles.map(c => c[2]);
+                const lowArr = candles.map(c => c[3]);
+                const closeArr = candles.map(c => c[4]);
+
+                const atr18 = ATR.calculate({
+                    high: highArr,
+                    low: lowArr,
+                    close: closeArr,
+                    period: 18,
+                });
+
+                if (Array.isArray(atr18) && atr18.length) {
+                    globalATR = atr18[atr18.length - 1];
+                    // optional debug:
+                    // console.log("ATR(18) updated:", globalATR);
+                }
+            }
+        } catch (e) {
+            console.error("⚠️ ATR(18) calc error:", e.message);
+            // keep previous globalATR if calc fails
+        }
+
         if (candles.length > 200) {
-            
-            // --- 📈 STRATEGY ENGINE: SUPERTREND (8, 2.9) ---
-            // Note: Ensure you added the 'calculateSuperTrend' function at the top of your file!
+            // --- 📈 STRATEGY ENGINE: SUPERTREND (7, 3) ---
             const stData = calculateSuperTrend(candles, 7, 3);
-            
+
             // Get Candles: [..., Previous(Completed), Current(Forming)]
             const lastCandleST = stData[stData.length - 2]; // The last COMPLETED 5-min candle
             const prevCandleST = stData[stData.length - 3]; // The one before that
-            
+
+            if (!lastCandleST || !prevCandleST) {
+                // Not enough ST points yet
+                return;
+            }
+
             // Log Status
-            const shortName = botState.contractName.replace("SILVER MIC ", ""); 
+            const shortName = botState.contractName ? botState.contractName.replace("SILVER MIC ", "") : botState.activeContract;
             const trendColor = lastCandleST.direction === 'BUY' ? '🟢' : '🔴';
-            
-            console.log(`📊 [${shortName}] LTP: ${lastKnownLtp} | ST: ${lastCandleST.value.toFixed(0)} | Trend: ${trendColor} ${lastCandleST.direction}`);
+            console.log(`📊 [${shortName}] LTP: ${lastKnownLtp} | ST: ${Math.round(lastCandleST.value)} | Trend: ${trendColor} ${lastCandleST.direction}`);
 
             // --- 🚦 SIGNAL LOGIC ---
-            // Only trade if market is open AND it's before 11:00 PM
             if (isMarketOpen() && currentMinutes < NO_NEW_TRADES_TIME) {
-                
                 // 1. Check for Trend FLIP
-                // Buy: Was SELL, Now BUY
                 const isBuySignal = (prevCandleST.direction === 'SELL' && lastCandleST.direction === 'BUY');
-                // Sell: Was BUY, Now SELL
                 const isSellSignal = (prevCandleST.direction === 'BUY' && lastCandleST.direction === 'SELL');
 
-                // 2. Execution Logic
-                // We only enter if we have NO position (or you can add reverse logic if you want to flip immediately)
+                // 2. Execution Logic - only enter if no position
                 if ((isBuySignal || isSellSignal) && !botState.positionType) {
-                    
                     const signalType = isBuySignal ? "BUY" : "SELL";
-                    
+
                     if (botState.isTradingEnabled) {
-                        console.log(`🚀 [SIGNAl] SuperTrend Flip Detected: ${signalType} @ ${lastKnownLtp}`);
-                        
+                        console.log(`🚀 [SIGNAL] SuperTrend Flip Detected: ${signalType} @ ${lastKnownLtp}`);
+
                         // Metrics for the log
                         const tradeMetrics = {
-                            strategy: "SuperTrend 8-2.9",
-                            stValue: lastCandleST.value.toFixed(0),
+                            strategy: "SuperTrend 7-3",
+                            stValue: Math.round(lastCandleST.value),
                             flipTime: getIST().toLocaleTimeString()
                         };
 
-                        // Execute
+                        // Execute order (placeOrder will set initial SL based on globalATR inside its filled handler)
                         await placeOrder(signalType, botState.maxTradeQty, lastKnownLtp, tradeMetrics);
                     } else {
                         console.log(`💤 Signal Ignored: Trading is PAUSED.`);
                     }
                 }
-            } 
-            else if (currentMinutes >= NO_NEW_TRADES_TIME && currentMinutes < FORCE_EXIT_TIME) {
-                // Log once in a while to confirm we are in "No Entry" mode
-                 if (currentMinutes % 5 === 0) console.log("zzz No New Entries allowed (After 11:00 PM)");
+            } else if (currentMinutes >= NO_NEW_TRADES_TIME && currentMinutes < FORCE_EXIT_TIME) {
+                // log occasionally
+                if (currentMinutes % 5 === 0) console.log("zzz No New Entries allowed (After 11:00 PM)");
             }
         }
-    } catch (e) { 
-        // Token Error handling -> Wait for Bot 1 to refresh it
-        if(e.response?.status===401) { 
-            console.log("⚠️ Token Expired in Loop. Waiting for Bot 1...");
-            ACCESS_TOKEN = null; 
+    } catch (e) {
+        if (e.response?.status === 401) {
+            console.log("⚠️ Token expired in loop. Waiting for Bot 1...");
+            ACCESS_TOKEN = null;
         } else {
             console.error("❌ Loop Error:", e.message);
         }
     }
 }, 15000);
 
-// ==== ATR(18) FOR STOPLOSS ====
-const highArr = candles.map(c => c[2]);
-const lowArr  = candles.map(c => c[3]);
-const closeArr = candles.map(c => c[4]);
 
-const atr18 = ATR.calculate({
-    high: highArr,
-    low: lowArr,
-    close: closeArr,
-    period: 18,
-});
 
-if (atr18.length > 1) {
-    globalATR = atr18[atr18.length - 1];
-}
 
 
 
