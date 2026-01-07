@@ -272,7 +272,7 @@ let lastKnownLtp = 0;
 let sseClients = []; 
 let currentWs = null; 
 // ✅ NEW: Store ATR here so WebSocket can read it instantly
-let globalATR = 800; 
+let globalATR = 0; 
 // ✅ NEW: For Rate Limiting (Throttle)
 let lastSlUpdateTime = 0; 
 
@@ -482,7 +482,7 @@ function calculateLivePnL() {
 }
 
 // ✅ SUPERTREND CALCULATOR (8, 2.9)
-function calculateSuperTrend(candles, period = 8, multiplier = 2.9) {
+function calculateSuperTrend(candles, period = 7, multiplier = 3) {
     const high = candles.map(c => c[2]);
     const low = candles.map(c => c[3]);
     const close = candles.map(c => c[4]);
@@ -738,7 +738,8 @@ async function initWebSocket() {
                                 
                                     // ✅ RULE 1: DYNAMIC TRAILING
                                     // Use Live ATR (limit min to 500)
-                                    const liveATR = Math.max(globalATR, 500) || 1000;
+                                    const liveATR = globalATR;
+
                                     
                                     let newStop = botState.currentStop;
                                     let didChange = false;
@@ -1177,8 +1178,9 @@ async function placeOrder(type, qty, ltp, metrics = null) { // ✅ 1. Added metr
                 botState.currentTradeTicks = []; // Start Fresh Recording
 
                 // ✅ DYNAMIC ATR STOP LOSS (1.5x ATR, Min 500)
-                const liveATR = Math.max(globalATR, 500) || 1000;
-                const slPoints = Math.round(liveATR * 1.5);
+                const liveATR = globalATR;
+                const slPoints = Math.round(liveATR * 1.6);
+
                 const slPrice = type === "BUY" ? Math.round(result.price - slPoints) : Math.round(result.price + slPoints);
                 
                 botState.currentStop = slPrice;
@@ -1355,7 +1357,7 @@ setInterval(async () => {
             
             // --- 📈 STRATEGY ENGINE: SUPERTREND (8, 2.9) ---
             // Note: Ensure you added the 'calculateSuperTrend' function at the top of your file!
-            const stData = calculateSuperTrend(candles, 8, 2.9);
+            const stData = calculateSuperTrend(candles, 7, 3);
             
             // Get Candles: [..., Previous(Completed), Current(Forming)]
             const lastCandleST = stData[stData.length - 2]; // The last COMPLETED 5-min candle
@@ -1414,7 +1416,23 @@ setInterval(async () => {
             console.error("❌ Loop Error:", e.message);
         }
     }
-}, 30000);
+}, 15000);
+
+// ==== ATR(18) FOR STOPLOSS ====
+const highArr = candles.map(c => c[2]);
+const lowArr  = candles.map(c => c[3]);
+const closeArr = candles.map(c => c[4]);
+
+const atr18 = ATR.calculate({
+    high: highArr,
+    low: lowArr,
+    close: closeArr,
+    period: 18,
+});
+
+if (atr18.length > 1) {
+    globalATR = atr18[atr18.length - 1];
+}
 
 
 
