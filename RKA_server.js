@@ -641,7 +641,9 @@ async function modifyExchangeSL(oldStop, newTrigger) {
 }
 // --- 🔌 WEBSOCKET (High-Precision Recorder) ---
 async function initWebSocket() {
-    if (!ACCESS_TOKEN || currentWs) return;
+    if (!ACCESS_TOKEN) return;
+    if (currentWs && (currentWs.readyState === 0 || currentWs.readyState === 1)) return;
+
     try {
         console.log("🔌 Initializing WS (V3 Binary Mode)...");
         const response = await axios.get("https://api.upstox.com/v3/feed/market-data-feed/authorize", { headers: { 'Authorization': 'Bearer ' + ACCESS_TOKEN, 'Accept': 'application/json' } });
