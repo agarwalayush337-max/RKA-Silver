@@ -64,11 +64,12 @@ async function detectChartPatterns(candles) {
 
     try {
         const res = await client.models.generateContent({
-            model: "gemini-2.0-flash", 
+            model: "gemini-3-pro-preview", 
             contents: [{ role: "user", parts: [{ text: prompt }] }],
             config: { responseMimeType: "application/json" }
         });
-        return JSON.parse(res.response.text());
+        const jsonString = res.text || res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        return JSON.parse(jsonString);
     } catch (e) { console.error("AI Brain Error:", e.message); return null; }
 }
 const express = require('express');
