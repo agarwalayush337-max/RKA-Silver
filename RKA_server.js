@@ -146,6 +146,11 @@ const STRATEGY_RULES = `
 * **Hard Exit:** At 11:15 PM (Auto Square-off)
 `;
 
+const STRATEGY_PARAMS = {
+    TRADE_PAUSE_MIN: 3,     // Cooldown in minutes after a trade
+    MAX_TRADE_QTY: 1        // Default Quantity
+};
+
 // Apply the lock
 app.use(authMiddleware);
 // --- 🔑 ADMIN PASSWORD LOGIN ROUTE (Restored) ---
@@ -2487,7 +2492,10 @@ app.get('/api/chart-data', async (req, res) => {
             open: c[1], high: c[2], low: c[3], close: c[4]
         }));
         res.json(chartData);
-    } catch(e) { res.json([]); }
+    } catch(e) { 
+        // 🛑 THIS WAS MISSING
+        res.json([]); 
+    } 
 });
 
 app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Server running on port ${PORT}`));
