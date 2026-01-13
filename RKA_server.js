@@ -1354,7 +1354,8 @@ setInterval(async () => {
             const msSinceExit = Date.now() - botState.lastExitTime;
             const inCooling = msSinceExit < (STRATEGY_PARAMS.TRADE_PAUSE_MIN * 60000);
 
-            if (isMarketOpen() && currentMinutes < NO_NEW_TRADES_TIME && !inCooling) {
+            // 🟢 TEST MODE: Removed isMarketOpen() so it runs at 1 AM
+            if (ACCESS_TOKEN && !inCooling) {
                 
                 // 2. ASK AI: Run only in first 40s of a 5-min candle (To save API calls)
                 const nowSec = new Date().getSeconds();
@@ -1468,8 +1469,7 @@ app.get('/delete-log/:id', async (req, res) => {
     res.redirect('/');
 });
 
-// --- 🏠 DASHBOARD ROUTE (Fixed Position Live Update) ---
-// --- 🏠 DASHBOARD ROUTE (Chart + Full Controls) ---
+// --- 🏠 DASHBOARD ROUTE (Restored Branding + AI Chart) ---
 app.get('/', (req, res) => {
     // 1. Calculate PnL
     const todayStr = formatDate(getIST()); 
@@ -1496,13 +1496,13 @@ app.get('/', (req, res) => {
         <body style="display:flex; justify-content:center; padding:10px; margin:0;">
             <div style="width:100%; max-width:650px; background:#1e293b; padding:15px; border-radius:15px;">
                 
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
                     <div>
-                        <h3 style="color:#38bdf8; margin:0;">🤖 AI CHART BOT (RKA)</h3>
+                        <h2 style="color:#38bdf8; margin:0;">श्री Radha Kishan Silver</h2>
                         <div style="font-size:12px; color:#94a3b8;">${botState.contractName}</div>
                     </div>
-                     <a href="/toggle-trading" id="toggle-btn" style="padding:5px 10px; border-radius:5px; text-decoration:none; color:white; font-size:12px; background:${botState.isTradingEnabled?'#22c55e':'#ef4444'}">
-                        ${botState.isTradingEnabled?'ON':'OFF'}
+                     <a href="/toggle-trading" id="toggle-btn" style="padding:8px 15px; border-radius:8px; text-decoration:none; color:white; font-weight:bold; background:${botState.isTradingEnabled?'#22c55e':'#ef4444'}">
+                        ${botState.isTradingEnabled?'🟢 TRADING ON':'🔴 PAUSED'}
                     </a>
                 </div>
 
@@ -1510,18 +1510,18 @@ app.get('/', (req, res) => {
                     <a href="/switch-contract?id=MCX_FO|458305&name=SILVER MIC FEB" 
                        style="flex:1; padding:8px; text-align:center; font-size:10px; border-radius:5px; text-decoration:none; 
                        background:${botState.activeContract.includes('458305') ? '#6366f1' : '#334155'}; color:white; border:1px solid #475569;">
-                       FEB
+                       FEB CONTRACT
                     </a>
                     <a href="/switch-contract?id=MCX_FO|466029&name=SILVER MIC APRIL" 
                        style="flex:1; padding:8px; text-align:center; font-size:10px; border-radius:5px; text-decoration:none; 
                        background:${botState.activeContract.includes('466029') ? '#6366f1' : '#334155'}; color:white; border:1px solid #475569;">
-                       APRIL
+                       APRIL CONTRACT
                     </a>
                 </div>
 
                 <div style="display:flex; border-bottom:2px solid #334155; margin-bottom:15px;">
-                    <button onclick="showTab('logs')" class="tab-btn active" id="btn-logs">📜 LOGS & CONTROLS</button>
-                    <button onclick="showTab('chart')" class="tab-btn" id="btn-chart">📈 CHART</button>
+                    <button onclick="showTab('logs')" class="tab-btn active" id="btn-logs">📜 DASHBOARD</button>
+                    <button onclick="showTab('chart')" class="tab-btn" id="btn-chart">📈 LIVE CHART</button>
                 </div>
 
                 <div id="logs-panel" class="panel active">
@@ -1579,13 +1579,16 @@ app.get('/', (req, res) => {
                 </div>
 
                 <div id="chart-panel" class="panel">
+                    <div id="chart-status" style="text-align:center; padding:10px; color:#94a3b8; font-size:12px; display:none;">
+                        ⚠️ Bot is OFFLINE. Click "Auto-Login" to load chart history.
+                    </div>
                     <div id="tv-chart" style="width:100%; height:500px;"></div>
                 </div>
 
             </div>
 
             <script>
-                // 1. TABS
+                // 1. TABS LOGIC
                 function showTab(name) {
                     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
                     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -1599,34 +1602,32 @@ app.get('/', (req, res) => {
                 source.onmessage = (e) => {
                     const d = JSON.parse(e.data);
                     
-                    // Basic Updates
                     document.getElementById('live-price').innerText = '₹' + d.price;
                     document.getElementById('live-pnl').innerText = '₹' + d.pnl;
                     document.getElementById('live-pnl').style.color = parseFloat(d.pnl) >= 0 ? '#4ade80' : '#f87171';
                     document.getElementById('hist-btn-pnl').innerText = 'Total: ₹' + d.historicalPnl;
-                    document.getElementById('live-sl').innerText = '₹' + Math.round(d.stop || 0);
-                    document.getElementById('exch-sl').innerText = '₹' + Math.round(d.stop || 0);
-                    document.getElementById('exch-id').innerText = d.slID || 'NO ORDER';
                     
+                    // Update Status Colors
                     const stat = document.getElementById('live-status');
                     stat.innerText = d.status;
                     stat.style.color = d.status === 'ONLINE' ? '#4ade80' : '#ef4444';
+                    
+                    // Show Chart Warning if Offline
+                    if(d.status === 'OFFLINE') {
+                        document.getElementById('chart-status').style.display = 'block';
+                    } else {
+                        document.getElementById('chart-status').style.display = 'none';
+                    }
 
                     const pos = document.getElementById('pos-type');
                     pos.innerText = d.position;
                     pos.style.color = d.position === 'NONE' ? '#facc15' : (d.position === 'LONG' ? '#4ade80' : '#f87171');
 
                     const btn = document.getElementById('toggle-btn');
-                    btn.innerText = d.isTrading ? "ON" : "OFF";
+                    btn.innerText = d.isTrading ? "🟢 TRADING ON" : "🔴 PAUSED";
                     btn.style.background = d.isTrading ? "#22c55e" : "#ef4444";
 
                     if(d.logsHTML) document.getElementById('logContent').innerHTML = d.logsHTML;
-                    
-                    // Chart Update (Optional: Real-time tick)
-                    if(candleSeries && d.price) {
-                         // We don't update chart per-tick here to keep it simple, 
-                         // but you could add .update({ time: ..., close: d.price }) here
-                    }
                 };
 
                 // 3. CHART LOGIC
@@ -1640,21 +1641,24 @@ app.get('/', (req, res) => {
                         grid: { vertLines: { color: '#334155' }, horzLines: { color: '#334155' } },
                         timeScale: { timeVisible: true, secondsVisible: false }
                     });
+                    
                     candleSeries = chart.addCandlestickSeries({
                         upColor: '#26a69a', downColor: '#ef5350', borderVisible: false, wickUpColor: '#26a69a', wickDownColor: '#ef5350'
                     });
                     
-                    // Fetch Data
-                    const res = await fetch('/api/chart-data');
-                    const data = await res.json();
-                    candleSeries.setData(data);
-                    chart.timeScale().fitContent();
+                    try {
+                        const res = await fetch('/api/chart-data');
+                        const data = await res.json();
+                        if(data && data.length > 0) {
+                            candleSeries.setData(data);
+                            chart.timeScale().fitContent();
+                        }
+                    } catch(e) { console.log("Chart Data Error:", e); }
                 }
             </script>
         </body></html>
     `);
 });
-
 
 // --- SMART SYNC (PnL Replay + Data Protection) ---
 // --- SMART SYNC (Full Replay Engine + Dynamic Contract Support) ---
