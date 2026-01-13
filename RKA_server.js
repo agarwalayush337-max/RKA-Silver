@@ -1469,7 +1469,7 @@ app.get('/delete-log/:id', async (req, res) => {
     res.redirect('/');
 });
 
-// --- 🏠 DASHBOARD ROUTE (Restored Branding + AI Chart) ---
+// --- 🏠 DASHBOARD ROUTE (Fixed Chart Version) ---
 app.get('/', (req, res) => {
     // 1. Calculate PnL
     const todayStr = formatDate(getIST()); 
@@ -1485,7 +1485,7 @@ app.get('/', (req, res) => {
         <!DOCTYPE html><html style="background:#0f172a; color:white; font-family:sans-serif;">
         <head>
             <meta name="viewport" content="width=device-width, initial-scale=1">
-            <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+            <script src="https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js"></script>
             <style>
                 .tab-btn { background:#334155; border:none; color:white; padding:10px 20px; cursor:pointer; flex:1; }
                 .tab-btn.active { background:#6366f1; font-weight:bold; }
