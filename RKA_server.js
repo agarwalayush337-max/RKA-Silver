@@ -1292,6 +1292,10 @@ async function validateToken() {
 // 🤖 TRADING LOOP (Executes Every 30 Seconds)
 // Strategy: SuperTrend (8, 2.9) | Intraday Only
 // ============================================================
+// ============================================================
+// 🤖 TRADING LOOP (Executes Every 30 Seconds)
+// Strategy: AI Pattern Recognition (Replaces SuperTrend)
+// ============================================================
 setInterval(async () => {
     // 1. SAFETY CHECKS (Slave Mode)
     // We do NOT login here. We just check if Bot 1 gave us a token.
@@ -1318,7 +1322,6 @@ setInterval(async () => {
             console.log(`⏰ [TIME LIMIT] 11:15 PM Reached. Forcing Intraday Square-off!`);
             
             const exitType = botState.positionType === 'LONG' ? 'SELL' : 'BUY';
-            // We pass a special reason so you know why it closed
             await placeOrder(exitType, botState.quantity, lastKnownLtp, { reason: "Intraday Time Limit" });
             return; // Stop processing further
         }
@@ -1347,24 +1350,24 @@ setInterval(async () => {
             const shortName = botState.contractName.replace("SILVER MIC ", ""); 
             console.log(`📊 [${shortName}] LTP: ${lastKnownLtp} | Checking AI...`);
 
-            // 1. Cooling Period Check
+            // Cooling Period Check
             const msSinceExit = Date.now() - botState.lastExitTime;
-            const inCooling = msSinceExit < 0; // Assuming logic sets this negative for waiting
+            const inCooling = msSinceExit < (STRATEGY_PARAMS.TRADE_PAUSE_MIN * 60000);
 
             if (isMarketOpen() && currentMinutes < NO_NEW_TRADES_TIME && !inCooling) {
                 
-                // 2. ASK AI: Run only in first 30s of a 5-min candle (To save API calls)
+                // 2. ASK AI: Run only in first 40s of a 5-min candle (To save API calls)
                 const nowSec = new Date().getSeconds();
                 const nowMin = new Date().getMinutes();
                 
-                if (nowMin % 5 === 0 && nowSec < 40) { // Extended to 40s to be safe with 30s loop
+                // Check if 5-min candle just closed (0, 5, 10...)
+                if (nowMin % 5 === 0 && nowSec < 40) { 
                     
                     // Prevent double-asking in the same minute
                     if (!botState.lastAiCheck || botState.lastAiCheck !== nowMin) {
                         botState.lastAiCheck = nowMin; // Mark this minute as checked
                         
                         console.log("🧠 Asking Gemini (Pure Pattern)...");
-                        // Send last 60 candles for context
                         const aiDecision = await detectChartPatterns(candles.slice(-60));
 
                         if (aiDecision && aiDecision.action !== "WAIT" && aiDecision.confidence > 80) {
@@ -1388,50 +1391,12 @@ setInterval(async () => {
                                 }
                             }
                         } else {
-                            console.log("🧠 AI says: WAIT (No high-conf pattern)");
+                            console.log("🧠 AI says: WAIT");
                         }
                     }
                 }
             }
             else if (currentMinutes >= NO_NEW_TRADES_TIME && currentMinutes < FORCE_EXIT_TIME) {
-                 if (currentMinutes % 5 === 0) console.log("zzz No New Entries allowed (After 11:00 PM)");
-            }
-        }
-            // --- 🚦 SIGNAL LOGIC ---
-            // Only trade if market is open AND it's before 11:00 PM
-            if (isMarketOpen() && currentMinutes < NO_NEW_TRADES_TIME) {
-                
-                // 1. Check for Trend FLIP
-                // Buy: Was SELL, Now BUY
-                const isBuySignal = (prevCandleST.direction === 'SELL' && lastCandleST.direction === 'BUY');
-                // Sell: Was BUY, Now SELL
-                const isSellSignal = (prevCandleST.direction === 'BUY' && lastCandleST.direction === 'SELL');
-
-                // 2. Execution Logic
-                // We only enter if we have NO position (or you can add reverse logic if you want to flip immediately)
-                if ((isBuySignal || isSellSignal) && !botState.positionType) {
-                    
-                    const signalType = isBuySignal ? "BUY" : "SELL";
-                    
-                    if (botState.isTradingEnabled) {
-                        console.log(`🚀 [SIGNAl] SuperTrend Flip Detected: ${signalType} @ ${lastKnownLtp}`);
-                        
-                        // Metrics for the log
-                        const tradeMetrics = {
-                            strategy: "SuperTrend 8-2.9",
-                            stValue: lastCandleST.value.toFixed(0),
-                            flipTime: getIST().toLocaleTimeString()
-                        };
-
-                        // Execute
-                        await placeOrder(signalType, botState.maxTradeQty, lastKnownLtp, tradeMetrics);
-                    } else {
-                        console.log(`💤 Signal Ignored: Trading is PAUSED.`);
-                    }
-                }
-            } 
-            else if (currentMinutes >= NO_NEW_TRADES_TIME && currentMinutes < FORCE_EXIT_TIME) {
-                // Log once in a while to confirm we are in "No Entry" mode
                  if (currentMinutes % 5 === 0) console.log("zzz No New Entries allowed (After 11:00 PM)");
             }
         }
