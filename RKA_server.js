@@ -898,7 +898,7 @@ initSlaveAuth();
 
 // --- DATA ENGINE ---
 async function getMergedCandles() {
-    const today = new Date();
+    const today = getIST();
     const tenDaysAgo = new Date(); tenDaysAgo.setDate(today.getDate() - 10);
     const urlIntraday = `https://api.upstox.com/v3/historical-candle/intraday/${encodeURIComponent(botState.activeContract)}/minutes/5`;
     const urlHistory = `https://api.upstox.com/v3/historical-candle/${encodeURIComponent(botState.activeContract)}/minutes/5/${formatDate(today)}/${formatDate(tenDaysAgo)}`;
