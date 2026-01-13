@@ -1356,7 +1356,8 @@ setInterval(async () => {
             const inCooling = msSinceExit < (STRATEGY_PARAMS.TRADE_PAUSE_MIN * 60000);
 
             // 🟢 TEST MODE: Removed isMarketOpen() so it runs at 1 AM
-            if (ACCESS_TOKEN && !inCooling) {
+            // 🌙 SLEEP MODE: Only run if Market is Open (9:00 AM - 11:30 PM)
+            if (isMarketOpen() && currentMinutes < NO_NEW_TRADES_TIME && !inCooling) {
                 
                 // 2. ASK AI: Run only in first 40s of a 5-min candle (To save API calls)
                 const nowSec = new Date().getSeconds();
