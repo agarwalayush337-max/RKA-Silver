@@ -22,6 +22,55 @@ async function runStrategicAnalysis(tradeHistory) {
     // In this SDK version, .text is a property of the response
     return response.text;
 }
+
+// 🧠 AI PATTERN RECOGNITION ENGINE (Pure Geometry)
+async function detectChartPatterns(candles) {
+    // 1. Format Data: Index | Open | High | Low | Close
+    let txt = "Index|Open|High|Low|Close\n";
+    candles.forEach((c, i) => { 
+        txt += `${i}|${Math.round(c[1])}|${Math.round(c[2])}|${Math.round(c[3])}|${Math.round(c[4])}\n` 
+    });
+
+    const prompt = `
+    ROLE: Senior Technical Analyst for MCX Silver (5-min chart).
+    TASK: Analyze the chart data below to find HIGH PROBABLITY patterns.
+    
+    PATTERNS TO FIND:
+    1. Bull/Bear Flags
+    2. Head & Shoulders
+    3. Double Top/Bottom
+
+    RULES:
+    1. Pattern must span at least 15 candles.
+    2. Ignore Symmetrical Triangles.
+    3. Return "drawings" coordinates for the chart.
+
+    DATA INPUT:
+    ${txt}
+
+    OUTPUT (JSON ONLY):
+    {
+      "pattern": "Bull Flag", 
+      "action": "BUY", // or "SELL" or "WAIT"
+      "confidence": 85, 
+      "entry": 72500, 
+      "stop": 72200, 
+      "drawings": [
+         { "type": "line", "time": 1709923000, "price": 72000, "color": "white" } 
+      ]
+    }
+    If no clear pattern, return: { "action": "WAIT" }
+    `;
+
+    try {
+        const res = await client.models.generateContent({
+            model: "gemini-2.0-flash", 
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            config: { responseMimeType: "application/json" }
+        });
+        return JSON.parse(res.response.text());
+    } catch (e) { console.error("AI Brain Error:", e.message); return null; }
+}
 const express = require('express');
 const app = express();
 app.use(require('express').json());
@@ -1289,34 +1338,60 @@ setInterval(async () => {
 
         if (candles.length > 200) {
             
-            // --- 📈 STRATEGY ENGINE: SUPERTREND (8, 2.9) ---
-            // Note: Ensure you added the 'calculateSuperTrend' function at the top of your file!
-            // --- 📈 STRATEGY ENGINE: SUPERTREND (3, 1.5) ---
-            // 1. Calculate Dynamic ATR (Length 3) for Global Use
-            const inputHigh = candles.map(c => c[2]);
-            const inputLow = candles.map(c => c[3]);
-            const inputClose = candles.map(c => c[4]);
-            
-            // Calculate ATR 3 manually to update the global variable
-            const atrRaw = ATR.calculate({ high: inputHigh, low: inputLow, close: inputClose, period: 3 });
-            if (atrRaw.length > 0) {
-                globalATR = atrRaw[atrRaw.length - 1]; // Updates the globalATR used by SL/Trailing
-                console.log(`📉 Updated Global ATR (3): ${globalATR.toFixed(2)}`);
-            }
-            
-            // 2. Calculate SuperTrend with NEW Settings (Length 3, Multiplier 1.5)
-            const stData = calculateSuperTrend(candles, 3, 1.5);
-            
-            // Get Candles: [..., Previous(Completed), Current(Forming)]
-            const lastCandleST = stData[stData.length - 2]; // The last COMPLETED 5-min candle
-            const prevCandleST = stData[stData.length - 3]; // The one before that
-            
-            // Log Status
+            // --- 🧠 STRATEGY ENGINE: AI PATTERNS ---
             const shortName = botState.contractName.replace("SILVER MIC ", ""); 
-            const trendColor = lastCandleST.direction === 'BUY' ? '🟢' : '🔴';
-            
-            console.log(`📊 [${shortName}] LTP: ${lastKnownLtp} | ST: ${lastCandleST.value.toFixed(0)} | Trend: ${trendColor} ${lastCandleST.direction}`);
+            console.log(`📊 [${shortName}] LTP: ${lastKnownLtp} | Checking AI...`);
 
+            // 1. Cooling Period Check
+            const msSinceExit = Date.now() - botState.lastExitTime;
+            const inCooling = msSinceExit < 0; // Assuming logic sets this negative for waiting
+
+            if (isMarketOpen() && currentMinutes < NO_NEW_TRADES_TIME && !inCooling) {
+                
+                // 2. ASK AI: Run only in first 30s of a 5-min candle (To save API calls)
+                const nowSec = new Date().getSeconds();
+                const nowMin = new Date().getMinutes();
+                
+                if (nowMin % 5 === 0 && nowSec < 40) { // Extended to 40s to be safe with 30s loop
+                    
+                    // Prevent double-asking in the same minute
+                    if (!botState.lastAiCheck || botState.lastAiCheck !== nowMin) {
+                        botState.lastAiCheck = nowMin; // Mark this minute as checked
+                        
+                        console.log("🧠 Asking Gemini (Pure Pattern)...");
+                        // Send last 60 candles for context
+                        const aiDecision = await detectChartPatterns(candles.slice(-60));
+
+                        if (aiDecision && aiDecision.action !== "WAIT" && aiDecision.confidence > 80) {
+                            
+                            // We only enter if we have NO position
+                            if (!botState.positionType) {
+                                const signalType = aiDecision.action; // "BUY" or "SELL"
+                                
+                                if (botState.isTradingEnabled) {
+                                    console.log(`🚀 AI SIGNAL: ${aiDecision.pattern} (${signalType}) @ ${lastKnownLtp}`);
+
+                                    // Execute Trade
+                                    await placeOrder(signalType, botState.maxTradeQty, lastKnownLtp, {
+                                        strategy: "AI Pattern",
+                                        note: aiDecision.pattern,
+                                        confidence: aiDecision.confidence,
+                                        ai_entry: aiDecision.entry
+                                    });
+                                } else {
+                                    console.log(`💤 Signal Ignored: Trading is PAUSED.`);
+                                }
+                            }
+                        } else {
+                            console.log("🧠 AI says: WAIT (No high-conf pattern)");
+                        }
+                    }
+                }
+            }
+            else if (currentMinutes >= NO_NEW_TRADES_TIME && currentMinutes < FORCE_EXIT_TIME) {
+                 if (currentMinutes % 5 === 0) console.log("zzz No New Entries allowed (After 11:00 PM)");
+            }
+        }
             // --- 🚦 SIGNAL LOGIC ---
             // Only trade if market is open AND it's before 11:00 PM
             if (isMarketOpen() && currentMinutes < NO_NEW_TRADES_TIME) {
@@ -1424,6 +1499,7 @@ app.get('/delete-log/:id', async (req, res) => {
 });
 
 // --- 🏠 DASHBOARD ROUTE (Fixed Position Live Update) ---
+// --- 🏠 DASHBOARD ROUTE (Chart + Full Controls) ---
 app.get('/', (req, res) => {
     // 1. Calculate PnL
     const todayStr = formatDate(getIST()); 
@@ -1439,15 +1515,125 @@ app.get('/', (req, res) => {
         <!DOCTYPE html><html style="background:#0f172a; color:white; font-family:sans-serif;">
         <head>
             <meta name="viewport" content="width=device-width, initial-scale=1">
+            <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+            <style>
+                .tab-btn { background:#334155; border:none; color:white; padding:10px 20px; cursor:pointer; flex:1; }
+                .tab-btn.active { background:#6366f1; font-weight:bold; }
+                .panel { display:none; }
+                .panel.active { display:block; }
+            </style>
+        </head>
+        <body style="display:flex; justify-content:center; padding:10px; margin:0;">
+            <div style="width:100%; max-width:650px; background:#1e293b; padding:15px; border-radius:15px;">
+                
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+                    <div>
+                        <h3 style="color:#38bdf8; margin:0;">🤖 AI CHART BOT (RKA)</h3>
+                        <div style="font-size:12px; color:#94a3b8;">${botState.contractName}</div>
+                    </div>
+                     <a href="/toggle-trading" id="toggle-btn" style="padding:5px 10px; border-radius:5px; text-decoration:none; color:white; font-size:12px; background:${botState.isTradingEnabled?'#22c55e':'#ef4444'}">
+                        ${botState.isTradingEnabled?'ON':'OFF'}
+                    </a>
+                </div>
+
+                <div style="display:flex; gap:5px; margin-bottom:15px;">
+                    <a href="/switch-contract?id=MCX_FO|458305&name=SILVER MIC FEB" 
+                       style="flex:1; padding:8px; text-align:center; font-size:10px; border-radius:5px; text-decoration:none; 
+                       background:${botState.activeContract.includes('458305') ? '#6366f1' : '#334155'}; color:white; border:1px solid #475569;">
+                       FEB
+                    </a>
+                    <a href="/switch-contract?id=MCX_FO|466029&name=SILVER MIC APRIL" 
+                       style="flex:1; padding:8px; text-align:center; font-size:10px; border-radius:5px; text-decoration:none; 
+                       background:${botState.activeContract.includes('466029') ? '#6366f1' : '#334155'}; color:white; border:1px solid #475569;">
+                       APRIL
+                    </a>
+                </div>
+
+                <div style="display:flex; border-bottom:2px solid #334155; margin-bottom:15px;">
+                    <button onclick="showTab('logs')" class="tab-btn active" id="btn-logs">📜 LOGS & CONTROLS</button>
+                    <button onclick="showTab('chart')" class="tab-btn" id="btn-chart">📈 CHART</button>
+                </div>
+
+                <div id="logs-panel" class="panel active">
+                    
+                    <div style="text-align:center; padding:15px; border:1px solid #334155; border-radius:10px; margin-bottom:15px;">
+                        <small style="color:#94a3b8;">LIVE PRICE</small><br><b id="live-price" style="font-size:24px; color:#fbbf24;">₹${lastKnownLtp || '---'}</b>
+                    </div>
+
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:15px;">
+                        <div style="background:#0f172a; padding:10px; text-align:center; border-radius:8px;"><small style="color:#94a3b8;">LIVE PNL</small><br><b id="live-pnl">₹${calculateLivePnL().live}</b></div>
+                        <div style="background:#0f172a; padding:10px; text-align:center; border-radius:8px;"><small style="color:#94a3b8;">TODAY NET</small><br><b id="todays-pnl" style="color:${todayPnL >= 0 ? '#4ade80' : '#f87171'}">₹${todayPnL.toFixed(2)}</b></div>
+                    </div>
+
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:15px;">
+                        <div style="background:#0f172a; padding:10px; text-align:center; border-radius:8px;"><small style="color:#94a3b8;">TRAILING SL</small><br><b id="live-sl" style="color:#f472b6;">₹${botState.currentStop ? botState.currentStop.toFixed(0) : '---'}</b></div>
+                        <div style="background:#0f172a; padding:10px; text-align:center; border-radius:8px;"><small style="color:#94a3b8;">EXCHANGE SL</small><br><b id="exch-sl" style="color:#f472b6;">₹${botState.currentStop ? botState.currentStop.toFixed(0) : '---'}</b><br><span id="exch-id" style="font-size:10px; color:#64748b;">${botState.slOrderId || 'NO ORDER'}</span></div>
+                    </div>
+
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:15px;">
+                        <div style="background:#0f172a; padding:10px; text-align:center; border-radius:8px;">
+                            <small style="color:#94a3b8;">POSITION</small><br>
+                            <b id="pos-type" style="color:#facc15;">${botState.positionType || 'NONE'}</b>
+                        </div>
+                        <div style="background:#0f172a; padding:10px; text-align:center; border-radius:8px;"><small style="color:#94a3b8;">STATUS</small><br><b id="live-status" style="color:${ACCESS_TOKEN?'#4ade80':'#ef4444'}">${ACCESS_TOKEN?'ONLINE':'OFFLINE'}</b></div>
+                    </div>
+
+                    <div style="margin-bottom:15px;">
+                        <a href="/reports" style="display:block; width:100%; padding:15px; background:#334155; color:white; text-align:center; border-radius:8px; text-decoration:none; border:1px solid #475569;">
+                            <b>📊 VIEW HISTORICAL REPORTS</b><br>
+                            <small id="hist-btn-pnl" style="color:${historyPnL>=0?'#4ade80':'#f87171'}">Total: ₹${historyPnL.toFixed(2)}</small>
+                        </a>
+                    </div>
+
+                    <div style="background:#0f172a; padding:15px; border-radius:10px; margin-bottom:15px; border:1px solid #334155;">
+                        <form action="/update-qty" method="POST" style="display:flex; justify-content:space-between; align-items:center;">
+                            <span style="color:#94a3b8; font-size:14px;">TRADE QUANTITY:</span>
+                            <div style="display:flex; gap:5px;">
+                                <input type="number" name="qty" value="${botState.maxTradeQty}" min="1" max="10" 
+                                    style="width:50px; background:#1e293b; color:white; border:1px solid #475569; padding:5px; border-radius:4px; text-align:center;">
+                                <button type="submit" style="background:#6366f1; color:white; border:none; padding:5px 10px; border-radius:4px; cursor:pointer; font-size:12px;">SET</button>
+                            </div>
+                        </form>
+                    </div>
+
+                    <div style="display:flex; gap:10px; margin-bottom:20px;">
+                        <form action="/trigger-login" method="POST" style="flex:1;"><button style="width:100%; padding:12px; background:#6366f1; color:white; border:none; border-radius:8px; cursor:pointer;">🤖 AUTO-LOGIN</button></form>
+                        <form action="/sync-price" method="POST" style="flex:1;"><button style="width:100%; padding:12px; background:#fbbf24; color:#0f172a; border:none; border-radius:8px; cursor:pointer;">🔄 SYNC PRICE</button></form>
+                    </div>
+
+                    <div style="display:grid; grid-template-columns: 1.2fr 0.6fr 0.5fr 1fr 1fr 1fr 1.5fr; gap:5px; padding:5px 10px; color:#94a3b8; border-bottom:1px solid #334155; font-size:11px; margin-bottom:5px;">
+                        <span>Time</span> <span style="text-align:center;">Type</span> <span style="text-align:center;">Qty</span> <span style="text-align:right;">Ord</span> <span style="text-align:right;">Exec</span> <span style="text-align:right;">PnL</span> <span style="text-align:right;">ID</span>
+                    </div>
+
+                    <div id="logContent">${displayLogs}</div>
+                </div>
+
+                <div id="chart-panel" class="panel">
+                    <div id="tv-chart" style="width:100%; height:500px;"></div>
+                </div>
+
+            </div>
+
             <script>
+                // 1. TABS
+                function showTab(name) {
+                    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+                    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                    document.getElementById(name+'-panel').classList.add('active');
+                    document.getElementById('btn-'+name).classList.add('active');
+                    if(name === 'chart') loadChart();
+                }
+
+                // 2. LIVE UPDATES
                 const source = new EventSource('/live-updates');
                 source.onmessage = (e) => {
                     const d = JSON.parse(e.data);
+                    
+                    // Basic Updates
                     document.getElementById('live-price').innerText = '₹' + d.price;
                     document.getElementById('live-pnl').innerText = '₹' + d.pnl;
                     document.getElementById('live-pnl').style.color = parseFloat(d.pnl) >= 0 ? '#4ade80' : '#f87171';
                     document.getElementById('hist-btn-pnl').innerText = 'Total: ₹' + d.historicalPnl;
-                    
                     document.getElementById('live-sl').innerText = '₹' + Math.round(d.stop || 0);
                     document.getElementById('exch-sl').innerText = '₹' + Math.round(d.stop || 0);
                     document.getElementById('exch-id').innerText = d.slID || 'NO ORDER';
@@ -1456,98 +1642,47 @@ app.get('/', (req, res) => {
                     stat.innerText = d.status;
                     stat.style.color = d.status === 'ONLINE' ? '#4ade80' : '#ef4444';
 
-                    // ✅ FIXED: Update Position Text Live
                     const pos = document.getElementById('pos-type');
                     pos.innerText = d.position;
                     pos.style.color = d.position === 'NONE' ? '#facc15' : (d.position === 'LONG' ? '#4ade80' : '#f87171');
 
                     const btn = document.getElementById('toggle-btn');
-                    btn.innerText = d.isTrading ? "🟢 TRADING ON" : "🔴 PAUSED";
+                    btn.innerText = d.isTrading ? "ON" : "OFF";
                     btn.style.background = d.isTrading ? "#22c55e" : "#ef4444";
 
                     if(d.logsHTML) document.getElementById('logContent').innerHTML = d.logsHTML;
+                    
+                    // Chart Update (Optional: Real-time tick)
+                    if(candleSeries && d.price) {
+                         // We don't update chart per-tick here to keep it simple, 
+                         // but you could add .update({ time: ..., close: d.price }) here
+                    }
                 };
+
+                // 3. CHART LOGIC
+                let chart, candleSeries;
+                async function loadChart() {
+                    if(chart) return; 
+                    
+                    document.getElementById('tv-chart').innerHTML = '';
+                    chart = LightweightCharts.createChart(document.getElementById('tv-chart'), {
+                        layout: { background: { color: '#1e293b' }, textColor: '#DDD' },
+                        grid: { vertLines: { color: '#334155' }, horzLines: { color: '#334155' } },
+                        timeScale: { timeVisible: true, secondsVisible: false }
+                    });
+                    candleSeries = chart.addCandlestickSeries({
+                        upColor: '#26a69a', downColor: '#ef5350', borderVisible: false, wickUpColor: '#26a69a', wickDownColor: '#ef5350'
+                    });
+                    
+                    // Fetch Data
+                    const res = await fetch('/api/chart-data');
+                    const data = await res.json();
+                    candleSeries.setData(data);
+                    chart.timeScale().fitContent();
+                }
             </script>
-        </head>
-        <body style="display:flex; justify-content:center; padding:20px;">
-            <div style="width:100%; max-width:650px; background:#1e293b; padding:25px; border-radius:15px;">
-                
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                    <h2 style="color:#38bdf8; margin:0;">श्री Radha Kishan Silver</h2>
-                    <div style="font-size:12px; color:#94a3b8;">${botState.contractName}</div>
-                    <a href="/toggle-trading" id="toggle-btn" style="padding:8px 15px; border-radius:8px; text-decoration:none; color:white; font-weight:bold; background:${botState.isTradingEnabled?'#22c55e':'#ef4444'}">
-                        ${botState.isTradingEnabled?'🟢 TRADING ON':'🔴 PAUSED'}
-                    </a>
-                </div>
-
-                <div style="display:flex; gap:5px; margin-bottom:20px;">
-                    <a href="/switch-contract?id=MCX_FO|458305&name=SILVER MIC FEB" 
-                       style="flex:1; padding:8px; text-align:center; font-size:10px; border-radius:5px; text-decoration:none; 
-                       background:${botState.activeContract.includes('458305') ? '#6366f1' : '#334155'}; color:white; border:1px solid #475569;">
-                       FEB CONTRACT
-                    </a>
-                    <a href="/switch-contract?id=MCX_FO|466029&name=SILVER MIC APRIL" 
-                       style="flex:1; padding:8px; text-align:center; font-size:10px; border-radius:5px; text-decoration:none; 
-                       background:${botState.activeContract.includes('466029') ? '#6366f1' : '#334155'}; color:white; border:1px solid #475569;">
-                       APRIL CONTRACT
-                    </a>
-                </div>
-                
-                <div style="text-align:center; padding:15px; border:1px solid #334155; border-radius:10px; margin-bottom:15px;">
-                    <small style="color:#94a3b8;">LIVE PRICE</small><br><b id="live-price" style="font-size:24px; color:#fbbf24;">₹${lastKnownLtp || '---'}</b>
-                </div>
-
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:15px;">
-                    <div style="background:#0f172a; padding:10px; text-align:center; border-radius:8px;"><small style="color:#94a3b8;">LIVE PNL</small><br><b id="live-pnl">₹${calculateLivePnL().live}</b></div>
-                    <div style="background:#0f172a; padding:10px; text-align:center; border-radius:8px;"><small style="color:#94a3b8;">TODAY'S NET PNL</small><br><b id="todays-pnl" style="color:${todayPnL >= 0 ? '#4ade80' : '#f87171'}">₹${todayPnL.toFixed(2)}</b></div>
-                </div>
-
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:15px;">
-                    <div style="background:#0f172a; padding:10px; text-align:center; border-radius:8px;"><small style="color:#94a3b8;">TRAILING SL</small><br><b id="live-sl" style="color:#f472b6;">₹${botState.currentStop ? botState.currentStop.toFixed(0) : '---'}</b></div>
-                    <div style="background:#0f172a; padding:10px; text-align:center; border-radius:8px;"><small style="color:#94a3b8;">EXCHANGE SL</small><br><b id="exch-sl" style="color:#f472b6;">₹${botState.currentStop ? botState.currentStop.toFixed(0) : '---'}</b><br><span id="exch-id" style="font-size:10px; color:#64748b;">${botState.slOrderId || 'NO ORDER'}</span></div>
-                </div>
-
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:15px;">
-                    <div style="background:#0f172a; padding:10px; text-align:center; border-radius:8px;">
-                        <small style="color:#94a3b8;">POSITION</small><br>
-                        <b id="pos-type" style="color:#facc15;">${botState.positionType || 'NONE'}</b>
-                    </div>
-                    <div style="background:#0f172a; padding:10px; text-align:center; border-radius:8px;"><small style="color:#94a3b8;">STATUS</small><br><b id="live-status" style="color:${ACCESS_TOKEN?'#4ade80':'#ef4444'}">${ACCESS_TOKEN?'ONLINE':'OFFLINE'}</b></div>
-                </div>
-                
-                <div style="margin-bottom:15px;">
-                    <a href="/reports" style="display:block; width:100%; padding:15px; background:#334155; color:white; text-align:center; border-radius:8px; text-decoration:none; border:1px solid #475569;">
-                        <b>📊 VIEW HISTORICAL REPORTS</b><br>
-                        <small id="hist-btn-pnl" style="color:${historyPnL>=0?'#4ade80':'#f87171'}">Total: ₹${historyPnL.toFixed(2)}</small>
-                    </a>
-                </div>
-
-                <div style="background:#0f172a; padding:15px; border-radius:10px; margin-bottom:15px; border:1px solid #334155;">
-                    <form action="/update-qty" method="POST" style="display:flex; justify-content:space-between; align-items:center;">
-                        <span style="color:#94a3b8; font-size:14px;">TRADE QUANTITY:</span>
-                        <div style="display:flex; gap:5px;">
-                            <input type="number" name="qty" value="${botState.maxTradeQty}" min="1" max="10" 
-                                style="width:50px; background:#1e293b; color:white; border:1px solid #475569; padding:5px; border-radius:4px; text-align:center;">
-                            <button type="submit" style="background:#6366f1; color:white; border:none; padding:5px 10px; border-radius:4px; cursor:pointer; font-size:12px;">SET</button>
-                        </div>
-                    </form>
-                </div>
-                <div style="display:flex; gap:10px; margin-bottom:20px;">
-                     <form action="/trigger-login" method="POST" style="flex:1;"><button style="width:100%; padding:12px; background:#6366f1; color:white; border:none; border-radius:8px; cursor:pointer;">🤖 AUTO-LOGIN</button></form>
-                     <form action="/sync-price" method="POST" style="flex:1;"><button style="width:100%; padding:12px; background:#fbbf24; color:#0f172a; border:none; border-radius:8px; cursor:pointer;">🔄 SYNC PRICE</button></form>
-                </div>
-                
-                <div style="display:grid; grid-template-columns: 1.2fr 0.8fr 1fr 1fr 1fr 1.5fr; gap:5px; padding:5px 10px; color:#94a3b8; border-bottom:1px solid #334155; font-size:11px; margin-bottom:5px;">
-                    <span>Time</span> 
-                    <span style="text-align:center;">Type</span> 
-                    <span style="text-align:right;">Ordered</span> 
-                    <span style="text-align:right;">Actual</span> 
-                    <span style="text-align:right;">PnL</span>
-                    <span style="text-align:right;">Order ID</span>
-                </div>
-                
-                <div id="logContent">${displayLogs}</div>
-            </div></body></html>`);
+        </body></html>
+    `);
 });
 
 
@@ -2341,5 +2476,18 @@ setTimeout(() => {
         performAutoLogin();
     }
 }, 20000); // 20-second delay to prevent crashing a cold server
+
+// 📊 API to feed the Dashboard Chart
+app.get('/api/chart-data', async (req, res) => {
+    try {
+        const candles = await getMergedCandles();
+        // Convert Upstox format to TradingView format
+        const chartData = candles.map(c => ({
+            time: (new Date(c[0]).getTime() / 1000) + 19800, // Adjust for IST
+            open: c[1], high: c[2], low: c[3], close: c[4]
+        }));
+        res.json(chartData);
+    } catch(e) { res.json([]); }
+});
 
 app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Server running on port ${PORT}`));
