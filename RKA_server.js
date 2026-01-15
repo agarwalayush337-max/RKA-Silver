@@ -23,9 +23,9 @@ async function runStrategicAnalysis(tradeHistory) {
     return response.text;
 }
 
-// 🧠 AI PATTERN RECOGNITION ENGINE (Pure Geometry)
+// 🧠 AI PATTERN RECOGNITION ENGINE (All-Star Strategy + Head & Shoulders)
 async function detectChartPatterns(candles) {
-    // 1. Format Data: Index | Open | High | Low | Close
+    // 1. Format Data
     let txt = "Index|Open|High|Low|Close\n";
     candles.forEach((c, i) => { 
         txt += `${i}|${Math.round(c[1])}|${Math.round(c[2])}|${Math.round(c[3])}|${Math.round(c[4])}\n` 
@@ -33,38 +33,57 @@ async function detectChartPatterns(candles) {
 
     const prompt = `
     ROLE: Senior Technical Analyst for MCX Silver (5-min chart).
-    TASK: Analyze the chart data below to find HIGH PROBABLITY patterns.
+    TASK: Identify HIGH PROBABILITY patterns based on the statistical audit.
     
-    PATTERNS TO FIND:
-    1. Bull/Bear Flags
-    2. Head & Shoulders
-    3. Double Top/Bottom
+    STRATEGY RANKING & RULES:
+    
+    1. 👑 **Bull Flag (The Money Maker):**
+       - LOGIC: High frequency, massive total return.
+       - RULE: Sharp Pole (>0.25%) + Upper 50% Consolidation.
+       - ACTION: BUY Breakout. Target: 100% Pole.
 
-    RULES:
-    1. Pattern must span at least 15 candles.
-    2. Ignore Symmetrical Triangles.
-    3. Return "drawings" coordinates for the chart.
+    2. 🎯 **Triple Bottom (The Sniper):**
+       - LOGIC: Highest Accuracy (~60%+).
+       - RULE: Three clear touches at support.
+       - ACTION: BUY Neckline Break. Target: Pattern Height.
 
-    DATA INPUT:
+    3. 👤 **Head & Shoulders (The Reversal):**
+       - LOGIC: Reliable Reversal (Win Rate ~50%).
+       - RULE: Left Shoulder, Head (Highest), Right Shoulder. Neckline must be clear.
+       - ACTION: SELL Breakdown (for H&S) or BUY Breakout (for Inv. H&S).
+       - TARGET: Distance from Head to Neckline.
+
+    4. 📉 **Descending Triangle (The Short):**
+       - LOGIC: Reliable breakdown pattern (~54% Win Rate).
+       - RULE: Flat Support + Lower Highs.
+       - ACTION: SELL Breakdown. Target: Pattern Height.
+
+    5. ⚠️ **Double Top/Bottom (CAUTION):**
+       - LOGIC: Only profitable if perfect.
+       - RULE: ONLY take if levels match exactly (Horizontal).
+    
+    EXECUTION RULES:
+    - **STOP LOSS:** MUST be Structural (e.g., Right Shoulder, Swing Low).
+    - **FILTER:** If price is chopping in a range, return "WAIT".
+
+    DATA INPUT (Today Only):
     ${txt}
 
     OUTPUT (JSON ONLY):
     {
-      "pattern": "Bull Flag", 
-      "action": "BUY", // or "SELL" or "WAIT"
-      "confidence": 85, 
+      "pattern": "Head & Shoulders", 
+      "action": "SELL", 
+      "confidence": 88, 
       "entry": 72500, 
-      "stop": 72200, 
-      "drawings": [
-         { "type": "line", "time": 1709923000, "price": 72000, "color": "white" } 
-      ]
+      "stop": 72800, // Structural SL (Right Shoulder)
+      "target": 71900
     }
     If no clear pattern, return: { "action": "WAIT" }
     `;
 
     try {
         const res = await client.models.generateContent({
-            model: "gemini-3-pro-preview", 
+            model: "gemini-2.0-flash", 
             contents: [{ role: "user", parts: [{ text: prompt }] }],
             config: { responseMimeType: "application/json" }
         });
@@ -72,6 +91,9 @@ async function detectChartPatterns(candles) {
         return JSON.parse(jsonString);
     } catch (e) { console.error("AI Brain Error:", e.message); return null; }
 }
+
+
+
 const express = require('express');
 const app = express();
 app.use(require('express').json());
@@ -735,6 +757,25 @@ async function initWebSocket() {
                             
                             if (key.includes(activeToken) || Object.keys(object.feeds).length === 1) {
                                 lastKnownLtp = newPrice;
+                                // 🎯 [INSERT START] TARGET MONITORING
+                            if (botState.positionType && botState.currentTarget) {
+                                const isLongWin = (botState.positionType === 'LONG' && newPrice >= botState.currentTarget);
+                                const isShortWin = (botState.positionType === 'SHORT' && newPrice <= botState.currentTarget);
+
+                                if (isLongWin || isShortWin) {
+                                    console.log(`🎯 BULLSEYE! Target Hit @ ₹${newPrice}. Exiting...`);
+                                    const exitSide = botState.positionType === 'LONG' ? 'SELL' : 'BUY';
+                                    
+                                    // Reset target immediately to prevent double-firing
+                                    botState.currentTarget = null; 
+                                    
+                                    // Execute Exit (PlaceOrder will handle SL cancellation)
+                                    // We use 'await' but inside WS we can't block, so we just call it.
+                                    placeOrder(exitSide, botState.quantity, newPrice, { reason: "Target Hit" }).catch(e => console.error(e));
+                                    return; 
+                                }
+                            }
+                            // 🎯 [INSERT END]
 
                                 // --- INSIDE currentWs.onmessage (After getting newPrice) ---
                     
@@ -1092,17 +1133,20 @@ async function verifyOrderStatus(orderId, context, tempLogId = null) {
     return { status: 'TIMEOUT' };
 }
 // --- STRICT PLACE ORDER (With Intent Logging & Error Detail) ---
-// --- 🚀 ROBUST V3 PLACE ORDER (Fixed ID & Metrics) ---
-async function placeOrder(type, qty, ltp, metrics = null) { // ✅ 1. Added metrics parameter
-    if (!ACCESS_TOKEN || !isApiAvailable() || !botState.isTradingEnabled) return false;
+// --- 🚀 ROBUST PLACE ORDER (Full Version) ---
+async function placeOrder(type, qty, ltp, metrics = null) { 
+    // 1. Basic Checks
+    if (!ACCESS_TOKEN) { console.log("⚠️ No Access Token. Skipping Order."); return false; }
+    if (!isApiAvailable()) { console.log("⚠️ API in Cooling Period. Skipping."); return false; }
+    if (!botState.isTradingEnabled) { console.log("⚠️ Trading Disabled via Dashboard."); return false; }
 
-    // 1. Calculate Initial 0.3% Buffer
+    // 2. Calculate Limit Price (0.3% Buffer to ensure fill)
     const bufferAmount = ltp * 0.003;
     let limitPrice = type === "BUY" ? Math.round(ltp + bufferAmount) : Math.round(ltp - bufferAmount);
 
-    console.log(`🚀 [INTENT] Sending ${type} Order: ${qty} Lot(s) @ ₹${ltp} | Limit: ₹${limitPrice}`);
+    console.log(`🚀 [INTENT] Sending ${type} Order: ${qty} Lot(s) @ ~₹${ltp} (Limit: ₹${limitPrice})`);
 
-    // Create Initial Log with a TRACKABLE ID
+    // 3. Create Audit Log Entry
     const logId = "ORD-" + Date.now(); 
     const logEntry = { 
         date: formatDate(getIST()), 
@@ -1111,17 +1155,17 @@ async function placeOrder(type, qty, ltp, metrics = null) { // ✅ 1. Added metr
         qty: qty, 
         orderedPrice: ltp, 
         executedPrice: 0, 
-        id: logId, // ✅ This Temp ID is now crucial
+        id: logId, 
         status: "SENT", 
-        tag: "API_BOT",
-        metrics: metrics // ✅ 2. Save Metrics (RSI, E50, Vol) to history immediately
+        tag: "API_BOT", 
+        metrics: metrics 
     };
     
     botState.history.unshift(logEntry);
-    pushToDashboard();
+    pushToDashboard(); // Update UI immediately
 
     try {
-        // 2. PRIMARY ATTEMPT: Send Order to Upstox V3
+        // 4. Send API Request to Upstox
         const res = await axios.post("https://api.upstox.com/v3/order/place", {
             quantity: qty, 
             product: "I", 
@@ -1132,131 +1176,166 @@ async function placeOrder(type, qty, ltp, metrics = null) { // ✅ 1. Added metr
             transaction_type: type, 
             disclosed_quantity: 0, 
             trigger_price: 0, 
-            is_amo: !isMarketOpen(), 
+            is_amo: false, 
             tag: "API_BOT"
-        }, { headers: { 'Authorization': `Bearer ${ACCESS_TOKEN}`, 'Content-Type': 'application/json' }});
+        }, { 
+            headers: { 
+                'Authorization': `Bearer ${ACCESS_TOKEN}`, 
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            }
+        });
 
-        // Capture ID
-        let orderId = res.data?.data?.order_ids?.[0] || res.data?.data?.order_id || res.data?.order_id;
-
+        let orderId = res.data?.data?.order_ids?.[0] || res.data?.data?.order_id;
+        
         if (!orderId) {
-            console.error("❌ ID Captured Failed. Response Body:", JSON.stringify(res.data));
-            throw new Error("No Order ID found in Upstox response.");
+            console.error("❌ API returned no Order ID:", res.data);
+            throw new Error("No Order ID from Upstox");
         }
 
-        // 3. ROBUST VERIFICATION
-        // ✅ 3. Pass 'logId' so verifyOrderStatus updates the existing row instead of creating a new one
+        console.log(`✅ Order Sent. ID: ${orderId}. Verifying status...`);
+
+        // 5. Verify Execution (Wait for Fill)
+        // We use your existing verifyOrderStatus helper
         const result = await verifyOrderStatus(orderId, 'ENTRY', logId); 
 
         if (result.status === 'FILLED') {
-            
-            // ✅ DETECT IF THIS IS AN ENTRY OR EXIT
+            console.log(`🎉 Order FILLED at ₹${result.price}`);
+
+            // Update Log with real execution price
+            const histIdx = botState.history.findIndex(h => h.id === orderId || h.id === logId);
+            if(histIdx !== -1) {
+                botState.history[histIdx].id = orderId; // Sync IDs
+                botState.history[histIdx].executedPrice = result.price;
+                botState.history[histIdx].status = "FILLED";
+            }
+
+            // Determine if this is an Entry or Exit
+            // (If we have a position AND the type is opposite, it's an Exit)
             const isExit = botState.positionType && (
                 (botState.positionType === 'LONG' && type === 'SELL') || 
                 (botState.positionType === 'SHORT' && type === 'BUY')
             );
 
             if (!isExit) {
-                //Handler: === NEW ENTRY ===
+                // ===========================================
+                // ✅ HANDLING NEW ENTRY
+                // ===========================================
                 botState.positionType = type === "BUY" ? 'LONG' : 'SHORT';
                 botState.entryPrice = result.price; 
                 botState.quantity = qty;
-                
-                // ✅ RESET AI METRICS FOR NEW TRADE
-                botState.maxRunUp = 0; 
-                botState.maxDrawdown = 0; 
-                botState.currentTradeTicks = []; // Start Fresh Recording
+                botState.lastTradeTime = Date.now();
+                botState.currentTradeTicks = []; // Reset tick recorder
 
-                // ✅ DYNAMIC ATR STOP LOSS (1.5x ATR, Min 500)
-                const liveATR = Math.max(globalATR, 500) || 1000;
-                const slPoints = Math.round((liveATR > 0 ? liveATR : 800) * 2.5);
-                const slPrice = type === "BUY" ? Math.round(result.price - slPoints) : Math.round(result.price + slPoints);
+                // --- A. SET TARGET (From AI or Default) ---
+                if (metrics && metrics.target) {
+                    botState.currentTarget = metrics.target;
+                    console.log(`🎯 Target Locked at: ₹${botState.currentTarget}`);
+                } else {
+                    botState.currentTarget = null;
+                }
+
+                // --- B. SET STOP LOSS (Chart vs ATR) ---
+                let slPrice;
+                if (metrics && metrics.customStop) {
+                    // Option 1: AI Provided Structural SL
+                    console.log(`🛡️ Using AI Chart SL: ${metrics.customStop}`);
+                    slPrice = metrics.customStop;
+                } else {
+                    // Option 2: Fallback to ATR
+                    const liveATR = Math.max(globalATR, 500) || 1000;
+                    const slPoints = Math.round((liveATR > 0 ? liveATR : 800) * 2.0); // 2x ATR
+                    slPrice = type === "BUY" ? Math.round(result.price - slPoints) : Math.round(result.price + slPoints);
+                    console.log(`⚠️ Using Fallback ATR SL: ${slPrice} (ATR: ${liveATR})`);
+                }
                 
                 botState.currentStop = slPrice;
                 
-                // Update Log with Execution Price (Find by ID since it might have changed to real OrderID)
-                const histIdx = botState.history.findIndex(h => h.id === orderId || h.id === logId);
-                if(histIdx !== -1) botState.history[histIdx].executedPrice = result.price;
-
+                // Save state before placing SL order
                 await saveSettings();
+                pushToDashboard();
+
+                // --- C. PLACE EXCHANGE SL ORDER ---
+                // This calls your existing helper to place a real SL-M order
+                console.log("🛡️ Placing Physical Stop Loss on Exchange...");
                 await manageExchangeSL(type, qty, slPrice); 
+                
                 return true;
 
             } else {
-                //Handler: === EXIT / SQUARE OFF ===
-                
-                // Calculate PnL
+                // ===========================================
+                // ✅ HANDLING EXIT / SQUARE OFF
+                // ===========================================
+                console.log("👋 Position Closed. Calculating PnL...");
+
                 let pnl = 0;
                 if(botState.positionType === 'LONG') pnl = (result.price - botState.entryPrice) * qty;
                 if(botState.positionType === 'SHORT') pnl = (botState.entryPrice - result.price) * qty;
-
-                // Update the log we just pushed at the top with Final Data
-                const histIdx = botState.history.findIndex(h => h.id === orderId || h.id === logId);
+                
+                // Update History Log with PnL
                 if(histIdx !== -1) {
-                    botState.history[histIdx].executedPrice = result.price;
-                    botState.history[histIdx].pnl = pnl;
-                    
-                    // ✅ SAVE AI DATA (TICKS + METRICS)
+                    botState.history[histIdx].pnl = Math.round(pnl);
+                    // Attach tick data for replay
                     botState.history[histIdx].tickData = [...(botState.currentTradeTicks || [])];
                 }
 
-                // ✅ START 10-MINUTE POST-TRADE WATCHER
-                botState.postExitWatch = {
-                    id: orderId, // Link to this specific trade log
-                    until: Date.now() + (10 * 60 * 1000) // 10 Minutes from now
-                };
-                console.log(`🎥 AI Camera Rolling: Recording 10 mins post-trade (ID: ${orderId})`);
+                // 🛑 CRITICAL: CANCEL THE PENDING SL ORDER
+                if (botState.slOrderId) {
+                    console.log(`🗑️ Cancelling Pending SL Order: ${botState.slOrderId}`);
+                    try {
+                        await axios.delete(`https://api.upstox.com/v2/order/cancel?order_id=${botState.slOrderId}`, { 
+                            headers: { 'Authorization': `Bearer ${ACCESS_TOKEN}`, 'Accept': 'application/json' }
+                        });
+                        console.log("✅ SL Order Cancelled.");
+                        botState.slOrderId = null;
+                    } catch (e) { 
+                        console.error("⚠️ Failed to Cancel SL (Might be already executed):", e.message); 
+                    }
+                }
 
-                // CLEANUP STATE
+                // Start Post-Trade Watcher (Cooling)
+                botState.lastExitTime = Date.now();
+                botState.postExitWatch = { id: orderId, until: Date.now() + (10 * 60 * 1000) };
+                
+                // Reset State
                 botState.positionType = null;
+                botState.currentTarget = null;
+                botState.currentStop = null;
                 botState.currentTradeTicks = [];
-                botState.maxRunUp = 0;
-                botState.maxDrawdown = 0;
+                botState.entryPrice = 0;
                 
                 await saveSettings();
+                pushToDashboard();
                 return true;
             }
+        } else {
+            // Order was CANCELLED or REJECTED
+            console.log(`❌ Order Status: ${result.status}. No Position taken.`);
+            const histIdx = botState.history.findIndex(h => h.id === logId);
+            if(histIdx !== -1) botState.history[histIdx].status = result.status;
+            pushToDashboard();
+            return false;
         }
-        return false;
 
     } catch (e) {
-        const errorDetail = e.response?.data?.errors?.[0]?.message || e.message;
-
-        // 🛡️ CIRCUIT BREACH AUTO-RECOVERY
-        const highMatch = errorDetail.match(/High Price Range:(\d+\.?\d*)/);
-        const lowMatch = errorDetail.match(/Low Price Range:(\d+\.?\d*)/);
-
-        if (errorDetail.includes("Circuit breach") && (highMatch || lowMatch)) {
-            const circuitLimitPrice = type === "BUY" ? Math.floor(parseFloat(highMatch[1])) : Math.ceil(parseFloat(lowMatch[1]));
-            
-            console.error(`⚠️ Circuit Breach! Auto-adjusting to Limit: ₹${circuitLimitPrice}`);
-            
-            // SECOND ATTEMPT
-            try {
-                const res2 = await axios.post("https://api.upstox.com/v3/order/place", {
-                    quantity: qty, product: "I", validity: "DAY", price: circuitLimitPrice,
-                    instrument_token: botState.activeContract, order_type: "LIMIT", 
-                    transaction_type: type, tag: "API_BOT"
-                }, { headers: { 'Authorization': `Bearer ${ACCESS_TOKEN}`, 'Content-Type': 'application/json' }});
-
-                let orderId2 = res2.data?.data?.order_ids?.[0] || res2.data?.data?.order_id;
-                // ✅ 4. Pass logId here too so the retry updates the original log
-                return await verifyOrderStatus(orderId2, 'ENTRY', logId); 
-            } catch (err2) {
-                console.error("❌ Final Circuit Retry Failed:", err2.message);
-            }
-        }
-
-        console.error(`❌ [FAILURE] Order Rejected: ${errorDetail}`);
+        console.error(`❌ Order Execution Failed: ${e.message}`);
         
-        // Only reset position if we were trying to enter and failed. 
+        // Update Log to FAILED
+        const histIdx = botState.history.findIndex(h => h.id === logId);
+        if(histIdx !== -1) {
+            botState.history[histIdx].status = "FAILED";
+            botState.history[histIdx].note = e.message;
+        }
+        
+        // Safety Reset
         if (!botState.positionType) botState.positionType = null; 
         
         pushToDashboard();
-        await saveSettings();
         return false;
     }
 }
+
+
 // --- TOKEN VALIDATION HELPER ---
 // ✅ UPDATED: REAL TOKEN VALIDATION
 async function validateToken() {
@@ -1297,9 +1376,11 @@ async function validateToken() {
 // 🤖 TRADING LOOP (Executes Every 30 Seconds)
 // Strategy: AI Pattern Recognition (Replaces SuperTrend)
 // ============================================================
+// ============================================================
+// 🤖 TRADING LOOP (Intraday Isolated + Ghost SL Check)
+// ============================================================
 setInterval(async () => {
     // 1. SAFETY CHECKS (Slave Mode)
-    // We do NOT login here. We just check if Bot 1 gave us a token.
     if (!ACCESS_TOKEN) return; 
 
     // 2. WebSocket Watchdog: Reconnect if dropped
@@ -1321,10 +1402,23 @@ setInterval(async () => {
         // 🛑 LOGIC A: AUTO SQUARE-OFF (11:15 PM)
         if (currentMinutes >= FORCE_EXIT_TIME && botState.positionType && botState.positionType !== 'EXITING') {
             console.log(`⏰ [TIME LIMIT] 11:15 PM Reached. Forcing Intraday Square-off!`);
-            
             const exitType = botState.positionType === 'LONG' ? 'SELL' : 'BUY';
             await placeOrder(exitType, botState.quantity, lastKnownLtp, { reason: "Intraday Time Limit" });
-            return; // Stop processing further
+            return; 
+        }
+
+        // 🛡️ LOGIC B: GHOST SL CHECK (Safety Mechanism)
+        // If Price crossed SL by 200 points but WS didn't catch it, manually check Order Status
+        if (botState.positionType && botState.currentStop && botState.slOrderId) {
+            const buffer = 200;
+            const slBreached = (botState.positionType === 'LONG' && lastKnownLtp < (botState.currentStop - buffer)) ||
+                               (botState.positionType === 'SHORT' && lastKnownLtp > (botState.currentStop + buffer));
+            
+            if (slBreached) {
+                console.log("⚠️ Price crossed SL + Buffer! Checking if SL triggered at Exchange...");
+                // Force a verification of the SL order
+                await verifyOrderStatus(botState.slOrderId, 'EXIT_CHECK');
+            }
         }
 
         // --- 📊 DATA ENGINE (Fetch Candles) ---
@@ -1345,49 +1439,59 @@ setInterval(async () => {
         (intraRes.data?.data?.candles || []).forEach(c => mergedMap.set(c[0], c));
         const candles = Array.from(mergedMap.values()).sort((a, b) => new Date(a[0]) - new Date(b[0]));
 
-        if (candles.length > 200) {
+        if (candles.length > 0) {
             
-            // --- 🧠 STRATEGY ENGINE: AI PATTERNS ---
-            const shortName = botState.contractName.replace("SILVER MIC ", ""); 
-            console.log(`📊 [${shortName}] LTP: ${lastKnownLtp} | Checking AI...`);
+            // 🛑 STRICT FILTER: REMOVE YESTERDAY'S DATA (Start from 9:00 AM Today)
+            // This prevents "Ghost Patterns" from overnight gaps
+            const todayStart = getIST();
+            todayStart.setHours(9, 0, 0, 0); 
 
-            // Cooling Period Check
+            // Only keep candles from TODAY
+            const todaysCandles = candles.filter(c => new Date(c[0]) >= todayStart);
+
+            const shortName = botState.contractName.replace("SILVER MIC ", ""); 
+            console.log(`📊 [${shortName}] LTP: ${lastKnownLtp} | Candles Today: ${todaysCandles.length}`);
+
             const msSinceExit = Date.now() - botState.lastExitTime;
             const inCooling = msSinceExit < (STRATEGY_PARAMS.TRADE_PAUSE_MIN * 60000);
 
-            // 🟢 TEST MODE: Removed isMarketOpen() so it runs at 1 AM
-            // 🌙 SLEEP MODE: Only run if Market is Open (9:00 AM - 11:30 PM)
-            if (isMarketOpen() && currentMinutes < NO_NEW_TRADES_TIME && !inCooling) {
+            // 🟢 STRATEGY ENGINE
+            // Wait for at least 5 candles (9:25 AM) to form a pattern
+            if (isMarketOpen() && currentMinutes < NO_NEW_TRADES_TIME && !inCooling && todaysCandles.length >= 5) {
                 
-                // 2. ASK AI: Run only in first 40s of a 5-min candle (To save API calls)
+                // 2. ASK AI: Run only in first 40s of a 5-min candle
                 const nowSec = new Date().getSeconds();
                 const nowMin = new Date().getMinutes();
                 
-                // Check if 5-min candle just closed (0, 5, 10...)
                 if (nowMin % 5 === 0 && nowSec < 40) { 
                     
-                    // Prevent double-asking in the same minute
                     if (!botState.lastAiCheck || botState.lastAiCheck !== nowMin) {
-                        botState.lastAiCheck = nowMin; // Mark this minute as checked
+                        botState.lastAiCheck = nowMin;
+
+                        console.log("🧠 Asking Gemini (Today's Data Only)...");
                         
-                        console.log("🧠 Asking Gemini (Pure Pattern)...");
-                        const aiDecision = await detectChartPatterns(candles.slice(-60));
+                        // Pass ONLY today's candles to AI
+                        const aiDecision = await detectChartPatterns(todaysCandles); 
+
+                        botState.latestAi = aiDecision;
+                        pushToDashboard(); 
 
                         if (aiDecision && aiDecision.action !== "WAIT" && aiDecision.confidence > 80) {
                             
-                            // We only enter if we have NO position
                             if (!botState.positionType) {
-                                const signalType = aiDecision.action; // "BUY" or "SELL"
+                                const signalType = aiDecision.action;
                                 
                                 if (botState.isTradingEnabled) {
                                     console.log(`🚀 AI SIGNAL: ${aiDecision.pattern} (${signalType}) @ ${lastKnownLtp}`);
 
-                                    // Execute Trade
+                                    // Pass Chart SL & Target to Order Logic
                                     await placeOrder(signalType, botState.maxTradeQty, lastKnownLtp, {
                                         strategy: "AI Pattern",
                                         note: aiDecision.pattern,
                                         confidence: aiDecision.confidence,
-                                        ai_entry: aiDecision.entry
+                                        ai_entry: aiDecision.entry,
+                                        customStop: aiDecision.stop,   // <--- Chart SL
+                                        target: aiDecision.target      // <--- Chart Target
                                     });
                                 } else {
                                     console.log(`💤 Signal Ignored: Trading is PAUSED.`);
@@ -1399,8 +1503,8 @@ setInterval(async () => {
                     }
                 }
             }
-            else if (currentMinutes >= NO_NEW_TRADES_TIME && currentMinutes < FORCE_EXIT_TIME) {
-                 if (currentMinutes % 5 === 0) console.log("zzz No New Entries allowed (After 11:00 PM)");
+            else if (todaysCandles.length < 5) {
+                 if (currentMinutes % 5 === 0) console.log("⏳ Waiting for morning data (Need 5+ candles)...");
             }
         }
     } catch (e) { 
@@ -1413,7 +1517,6 @@ setInterval(async () => {
         }
     }
 }, 30000);
-
 
 
 
