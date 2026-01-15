@@ -1478,20 +1478,24 @@ setInterval(async () => {
 
                         if (aiDecision && aiDecision.action !== "WAIT" && aiDecision.confidence > 80) {
                             
-                            if (!botState.positionType) {
+                            // 🛑 CRITICAL FIX: DOUBLE LOCK
+                            // 1. Check if we are flat (No Position)
+                            // 2. Check if we are currently busy placing an order (Race Protection)
+                            if (!botState.positionType && !botState.isOrdering) {
+                                
                                 const signalType = aiDecision.action;
                                 
                                 if (botState.isTradingEnabled) {
                                     console.log(`🚀 AI SIGNAL: ${aiDecision.pattern} (${signalType}) @ ${lastKnownLtp}`);
 
-                                    // Pass Chart SL & Target to Order Logic
+                                    // EXECUTE
                                     await placeOrder(signalType, botState.maxTradeQty, lastKnownLtp, {
                                         strategy: "AI Pattern",
                                         note: aiDecision.pattern,
                                         confidence: aiDecision.confidence,
                                         ai_entry: aiDecision.entry,
-                                        customStop: aiDecision.stop,   // <--- Chart SL
-                                        target: aiDecision.target      // <--- Chart Target
+                                        customStop: aiDecision.stop,
+                                        target: aiDecision.target
                                     });
                                 } else {
                                     console.log(`💤 Signal Ignored: Trading is PAUSED.`);
@@ -1504,13 +1508,15 @@ setInterval(async () => {
                 }
             }
             else if (todaysCandles.length < 5) {
-                 if (currentMinutes % 5 === 0) console.log("⏳ Waiting for morning data (Need 5+ candles)...");
+                 // Log only once every 5 mins to reduce spam
+                 if (new Date().getMinutes() % 5 === 0 && new Date().getSeconds() < 10) {
+                     console.log(`⏳ Waiting for morning data (Found ${todaysCandles.length}/5 candles)...`);
+                 }
             }
         }
     } catch (e) { 
-        // Token Error handling -> Wait for Bot 1 to refresh it
         if(e.response?.status===401) { 
-            console.log("⚠️ Token Expired in Loop. Waiting for Bot 1...");
+            console.log("⚠️ Token Expired. Waiting for refresh...");
             ACCESS_TOKEN = null; 
         } else {
             console.error("❌ Loop Error:", e.message);
