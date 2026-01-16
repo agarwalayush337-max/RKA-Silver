@@ -78,7 +78,7 @@ async function detectChartPatterns(candles) {
       "stop": 72800, // Structural SL (Right Shoulder)
       "target": 71900
     }
-    If no clear pattern, return: { "action": "WAIT" }
+    If no clear pattern, return: { "action": "WAIT", "reason": "Price is chopping inside a range, no clear trend." }
     `;
 
     try {
@@ -1506,7 +1506,7 @@ setInterval(async () => {
                                 }
                             }
                         } else {
-                            console.log("🧠 AI says: WAIT");
+                            console.log(`🧠 AI says: WAIT | Reason: ${aiDecision?.reason || "No High Conviction Pattern"}`);
                         }
                     }
                 }
