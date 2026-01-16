@@ -1379,6 +1379,9 @@ async function validateToken() {
 // ============================================================
 // 🤖 TRADING LOOP (Intraday Isolated + Ghost SL Check)
 // ============================================================
+// ============================================================
+// 🤖 TRADING LOOP (Fixed Date Filter + Race Lock)
+// ============================================================
 setInterval(async () => {
     // 1. SAFETY CHECKS (Slave Mode)
     if (!ACCESS_TOKEN) return; 
@@ -1408,7 +1411,6 @@ setInterval(async () => {
         }
 
         // 🛡️ LOGIC B: GHOST SL CHECK (Safety Mechanism)
-        // If Price crossed SL by 200 points but WS didn't catch it, manually check Order Status
         if (botState.positionType && botState.currentStop && botState.slOrderId) {
             const buffer = 200;
             const slBreached = (botState.positionType === 'LONG' && lastKnownLtp < (botState.currentStop - buffer)) ||
@@ -1416,7 +1418,6 @@ setInterval(async () => {
             
             if (slBreached) {
                 console.log("⚠️ Price crossed SL + Buffer! Checking if SL triggered at Exchange...");
-                // Force a verification of the SL order
                 await verifyOrderStatus(botState.slOrderId, 'EXIT_CHECK');
             }
         }
@@ -1441,13 +1442,16 @@ setInterval(async () => {
 
         if (candles.length > 0) {
             
-            // 🛑 STRICT FILTER: REMOVE YESTERDAY'S DATA (Start from 9:00 AM Today)
-            // This prevents "Ghost Patterns" from overnight gaps
-            const todayStart = getIST();
-            todayStart.setHours(9, 0, 0, 0); 
+            // 🛑 STRICT FILTER: STRING MATCHING (Fixes "Candles Today: 0")
+            // 1. Get Today's Date as a string "YYYY-MM-DD"
+            const istNow = getIST();
+            const year = istNow.getFullYear();
+            const month = String(istNow.getMonth() + 1).padStart(2, '0');
+            const day = String(istNow.getDate()).padStart(2, '0');
+            const todayDateStr = `${year}-${month}-${day}`; // e.g. "2026-01-16"
 
-            // Only keep candles from TODAY
-            const todaysCandles = candles.filter(c => new Date(c[0]) >= todayStart);
+            // 2. Filter: Keep candle if its timestamp string contains "2026-01-16"
+            const todaysCandles = candles.filter(c => c[0].indexOf(todayDateStr) !== -1);
 
             const shortName = botState.contractName.replace("SILVER MIC ", ""); 
             console.log(`📊 [${shortName}] LTP: ${lastKnownLtp} | Candles Today: ${todaysCandles.length}`);
@@ -1523,7 +1527,6 @@ setInterval(async () => {
         }
     }
 }, 30000);
-
 
 
 // --- 📡 API & DASHBOARD ---
