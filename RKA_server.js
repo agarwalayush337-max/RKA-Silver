@@ -1048,18 +1048,28 @@ async function verifyOrderStatus(orderId, context, tempLogId = null) {
                 
                 console.log(`✅ Order Confirmed: ${order.transaction_type} @ ₹${realPrice}`);
                 
-                // --- A. UPDATE THE DASHBOARD LOG ---
-                // Find by Real ID OR Temp ID (Passed from placeOrder)
-                const logIndex = botState.history.findIndex(h => h.id === orderId || h.id === tempLogId);
+                // 🛠️ FIX: If SL Triggered but no log exists, CREATE ONE so we can clear the position
+                let logIndex = botState.history.findIndex(h => h.id === orderId || h.id === tempLogId);
+
+                if (logIndex === -1 && context === 'EXIT_CHECK') {
+                     console.log("⚠️ SL Log missing. Creating recovery log to clear position...");
+                     const newLog = {
+                        date: formatDate(getIST()), time: execTime, type: order.transaction_type,
+                        qty: parseInt(order.filled_quantity) || botState.quantity,
+                        orderedPrice: 0, executedPrice: realPrice, id: orderId,
+                        status: "FILLED", tag: "SL_HIT", pnl: 0
+                     };
+                     botState.history.unshift(newLog);
+                     logIndex = 0; // Point to this new log
+                }
                 
+                // --- A. UPDATE THE DASHBOARD LOG ---
                 if (logIndex !== -1) {
-                    // Update Core Data
-                    botState.history[logIndex].id = orderId; // 🔄 Swap Temp ID for Real ID
+                    botState.history[logIndex].id = orderId; 
                     botState.history[logIndex].executedPrice = realPrice;
                     botState.history[logIndex].time = execTime;
                     botState.history[logIndex].status = "FILLED";
                     
-                    // Capture Filled Quantity
                     const filledQty = parseInt(order.filled_quantity);
                     if (filledQty) botState.history[logIndex].qty = filledQty;
 
@@ -1069,42 +1079,24 @@ async function verifyOrderStatus(orderId, context, tempLogId = null) {
                         
                         let tradePnL = 0;
                         const qty = botState.history[logIndex].qty;
-                        const entryPrice = botState.entryPrice;
+                        const entryPrice = botState.entryPrice || realPrice; 
 
-                        // Calculate PnL based on direction
                         if (order.transaction_type === 'SELL') tradePnL = (realPrice - entryPrice) * qty;
                         else tradePnL = (entryPrice - realPrice) * qty;
 
-                        // Save PnL
                         botState.history[logIndex].pnl = tradePnL;
                         botState.totalPnL += tradePnL;
                         console.log(`💰 Final PnL: ₹${tradePnL.toFixed(0)}`);
 
-                        // 💾 Save AI Data
-                        botState.history[logIndex].tickData = [...(botState.currentTradeTicks || [])];
-                        botState.history[logIndex].metrics = {
-                            ...(botState.history[logIndex].metrics || {}),
-                            mae: botState.maxDrawdown || 0,
-                            mfe: botState.maxRunUp || 0
-                        };
-
-                        // 🎥 Start 10-Minute Post-Trade Watcher
-                        botState.postExitWatch = { 
-                            id: orderId, 
-                            until: Date.now() + (10 * 60 * 1000) 
-                        };
-                        console.log(`🎥 Post-Trade Watcher Started for ID: ${orderId}`);
-
-                        // 🧹 RESET GLOBAL BOT STATE
+                        // 🧹 RESET GLOBAL BOT STATE (CRITICAL FIX)
+                        console.log("🧹 State Reset: Position Cleared.");
                         botState.positionType = null;
                         botState.entryPrice = 0;
                         botState.quantity = 0;
+                        botState.slOrderId = null;
                         botState.currentTradeTicks = [];
-                        botState.maxRunUp = 0;
-                        botState.maxDrawdown = 0;
                     }
                     
-                    // Save this specific trade to Firestore
                     await saveTrade(botState.history[logIndex]); 
                 }
                 
@@ -1572,7 +1564,7 @@ setInterval(async () => {
             const nowM = new Date().getMinutes();
             const mode = (nowH === 9 && nowM < 5) ? "🌅 GAP MODE" : "🧠 CHART PATTERN MODE";
             
-            console.log(`📊 [${shortName}] LTP: ${lastKnownLtp} | ${mode} | Candles: ${todaysCandles.length}`);
+            console.log(`📊 [${shortName}] LTP: ${lastKnownLtp} | Candles: ${todaysCandles.length}`);
 
             const msSinceExit = Date.now() - botState.lastExitTime;
             const inCooling = msSinceExit < (STRATEGY_PARAMS.TRADE_PAUSE_MIN * 60000);
