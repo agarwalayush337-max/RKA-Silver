@@ -1438,6 +1438,13 @@ setInterval(async () => {
         initWebSocket();
         return; 
     }
+    try {
+        // --- 🕒 INTRADAY TIME MANAGEMENT ---
+        const now = getIST();
+        const h = now.getHours();
+        const m = now.getMinutes();
+        const s = now.getSeconds();
+        const currentMinutes = (h * 60) + m;
 
     // =================================================
         // 💾 NIGHT RECORDER (11:55 PM IST)
@@ -1445,7 +1452,7 @@ setInterval(async () => {
         // Every night, we fetch the live price and save it for tomorrow
         if (h === 23 && m === 55 && s < 10) {
              console.log("💾 11:55 PM: Recording XAGUSD Spot Price...");
-             const GOLD_KEY = "YOUR_GOLDAPI_KEY_HERE";
+             const GOLD_KEY = "goldapi-1zw3osmkljxu9c-io";
              try {
                  const res = await axios.get("https://www.goldapi.io/api/XAG/USD", { 
                      headers: { "x-access-token": GOLD_KEY } 
