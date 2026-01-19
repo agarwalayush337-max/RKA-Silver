@@ -1,10 +1,11 @@
 // ✅ Correct CommonJS import for Gemini 3
 const { GoogleGenAI } = require("@google/genai");
 
-// --- 🌍 GAP TRADING ENGINE (GoldAPI) ---
+// --- 🌍 GAP DATA DIAGNOSTIC (GoldAPI) ---
 async function getGlobalGapGoldAPI() {
-    console.log("🌍 GAP MODE: Fetching Global Data...");
-    // 🔑 Use your GoldAPI Key here
+    console.log("🔍 STARTING PRICE CHECK (GoldAPI)...");
+    
+    // 🔑 Keep your key here
     const GOLD_KEY = "goldapi-1zw3osmkljxu9c-io"; 
     
     try {
@@ -13,14 +14,23 @@ async function getGlobalGapGoldAPI() {
         });
 
         const data = response.data;
-        if (!data || !data.price || !data.prev_close_price) return null;
+        if (!data || !data.price || !data.prev_close_price) {
+            console.log("❌ Error: API returned empty data.");
+            return null;
+        }
 
-        const currentPrice = data.price;
-        const prevClose = data.prev_close_price;
-        const gapPercent = ((currentPrice - prevClose) / prevClose); // e.g. 0.01 for 1%
+        const prevClose = data.prev_close_price; // This is Yesterday's Close
+        const currentPrice = data.price;         // This is LIVE Price
+        const gapPercent = ((currentPrice - prevClose) / prevClose);
 
-        console.log(`🌎 GLOBAL GAP: ${gapPercent * 100}% (Prev: $${prevClose} -> Curr: $${currentPrice})`);
+        console.log("========================================");
+        console.log(`📉 YESTERDAY CLOSE (11:55 PM): $${prevClose}`);
+        console.log(`📈 CURRENT PRICE (NOW):        $${currentPrice}`);
+        console.log(`📊 GAP DIFFERENCE:             ${(gapPercent * 100).toFixed(2)}%`);
+        console.log("========================================");
+
         return gapPercent;
+
     } catch (e) {
         console.error("❌ GoldAPI Failed:", e.message);
         return null;
