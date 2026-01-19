@@ -1,6 +1,32 @@
 // ✅ Correct CommonJS import for Gemini 3
 const { GoogleGenAI } = require("@google/genai");
 
+// --- 🌍 GAP TRADING ENGINE (GoldAPI) ---
+async function getGlobalGapGoldAPI() {
+    console.log("🌍 GAP MODE: Fetching Global Data...");
+    // 🔑 Use your GoldAPI Key here
+    const GOLD_KEY = "goldapi-1zw3osmkljxu9c-io"; 
+    
+    try {
+        const response = await axios.get("https://www.goldapi.io/api/XAG/USD", {
+            headers: { "x-access-token": GOLD_KEY }
+        });
+
+        const data = response.data;
+        if (!data || !data.price || !data.prev_close_price) return null;
+
+        const currentPrice = data.price;
+        const prevClose = data.prev_close_price;
+        const gapPercent = ((currentPrice - prevClose) / prevClose); // e.g. 0.01 for 1%
+
+        console.log(`🌎 GLOBAL GAP: ${gapPercent * 100}% (Prev: $${prevClose} -> Curr: $${currentPrice})`);
+        return gapPercent;
+    } catch (e) {
+        console.error("❌ GoldAPI Failed:", e.message);
+        return null;
+    }
+}
+
 // ✅ Initialize using the 'new' keyword and the correct class name
 const client = new GoogleGenAI({
     apiKey: process.env.GEMINI_API_KEY,
@@ -1396,7 +1422,56 @@ setInterval(async () => {
     try {
         // --- 🕒 INTRADAY TIME MANAGEMENT ---
         const now = getIST();
-        const currentMinutes = (now.getHours() * 60) + now.getMinutes();
+        const h = now.getHours();
+        const m = now.getMinutes();
+        const currentMinutes = (h * 60) + m;
+
+        // =================================================
+        // 🌅 MORNING GAP SNIPER (8:59 AM TRIGGER)
+        // =================================================
+        if (h === 8 && m === 59 && !botState.gapScheduled) {
+            botState.gapScheduled = true; // Lock so we run this only once
+            
+            console.log("🌅 ENTERING GAP TRADING MODE...");
+            const gapPercent = await getGlobalGapGoldAPI();
+            
+            // THRESHOLD: Only trade if Gap is > 0.3% (Avoid noise)
+            if (gapPercent && Math.abs(gapPercent) > 0.003) {
+                const signal = gapPercent > 0 ? "BUY" : "SELL";
+                console.log(`🎯 GAP DETECTED: ${signal} (Strength: ${(gapPercent*100).toFixed(2)}%)`);
+                console.log(`⏱️ Arming Sniper for 9:00:01 AM execution...`);
+
+                // CALCULATE EXPECTED EXECUTION PRICE
+                // We use yesterday's close (lastKnownLtp) + Gap% to find where MCX *should* open
+                const estimatedOpen = lastKnownLtp * (1 + gapPercent);
+                
+                // CALCULATE DELAY TO 9:00:01 IST
+                // ✅ FIX: Use 'now' (which is getIST()) as the base reference
+                const nowIST = now.getTime(); // 'now' is already getIST() from top of loop
+                
+                const targetTime = new Date(now.getTime()); // Copy the IST time
+                targetTime.setHours(9, 0, 1, 0); // Set to 9:00:01 AM
+                
+                const delay = targetTime.getTime() - nowIST;
+
+                
+                if (delay > 0) {
+                    setTimeout(() => {
+                        console.log("🚀 EXECUTING GAP TRADE NOW!");
+                        placeOrder(signal, botState.maxTradeQty, estimatedOpen, {
+                            strategy: "GAP_SNIPER",
+                            note: `Global Gap ${(gapPercent*100).toFixed(2)}%`,
+                            customStop: signal === "BUY" ? (estimatedOpen - 800) : (estimatedOpen + 800) // 🛡️ Fixed 800 Pt Safety Stop
+                        });
+                    }, delay);
+                }
+            } else {
+                console.log("😴 Gap too small Skipping Gap Trade.");
+            }
+        }
+
+        // RESET GAP LOCK (at 9:05 AM)
+        if (h === 9 && m === 5) botState.gapScheduled = false;
         
         // Settings: 11:00 PM (Stop Entry) & 11:15 PM (Force Exit)
         const NO_NEW_TRADES_TIME = 1380; 
@@ -1454,7 +1529,12 @@ setInterval(async () => {
             const todaysCandles = candles.filter(c => c[0].indexOf(todayDateStr) !== -1);
 
             const shortName = botState.contractName.replace("SILVER MIC ", ""); 
-            console.log(`📊 [${shortName}] LTP: ${lastKnownLtp} | Candles Today: ${todaysCandles.length}`);
+            // 🌅 Logic to show correct mode in logs
+            const nowH = new Date().getHours();
+            const nowM = new Date().getMinutes();
+            const mode = (nowH === 9 && nowM < 5) ? "🌅 GAP MODE" : "🧠 CHART PATTERN MODE";
+            
+            console.log(`📊 [${shortName}] LTP: ${lastKnownLtp} | ${mode} | Candles: ${todaysCandles.length}`);
 
             const msSinceExit = Date.now() - botState.lastExitTime;
             const inCooling = msSinceExit < (STRATEGY_PARAMS.TRADE_PAUSE_MIN * 60000);
@@ -2580,5 +2660,6 @@ app.get('/api/chart-data', async (req, res) => {
         res.json([]); 
     } 
 });
+getGlobalGapGoldAPI();
 
 app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Server running on port ${PORT}`));
